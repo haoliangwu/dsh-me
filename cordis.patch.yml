@@ -10,5 +10,7 @@
       name: dsh-me
     - id: dsh-ui-peak-rate
       name: dsh-me/plugins/peak-rate
+    - id: dsh-ui-notification
+      name: dsh-me/plugins/notification
     - id: dsh-x-opencode-session-shim
       name: dsh-me/plugins/x-opencode-session-shim

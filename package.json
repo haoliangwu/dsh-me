@@ -6,6 +6,7 @@
   "exports": {
     ".": "./lib/index.js",
     "./plugins/peak-rate": "./lib/plugins/peak-rate.js",
+    "./plugins/notification": "./lib/plugins/notification.js",
     "./plugins/x-opencode-session-shim": "./lib/plugins/x-opencode-session-shim.js",
     "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
