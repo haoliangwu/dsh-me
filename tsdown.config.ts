@@ -45,7 +45,6 @@ export default defineConfig([
     entry: {
       index: 'src/index.ts',
       'plugins/peak-rate': 'src/plugins/peak-rate/index.ts',
-      'plugins/peak-rate/invariant': 'src/plugins/peak-rate/invariant.ts',
     },
     outDir: 'lib',
     format: ['esm'],

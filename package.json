@@ -6,7 +6,6 @@
   "exports": {
     ".": "./lib/index.js",
     "./plugins/peak-rate": "./lib/plugins/peak-rate.js",
-    "./plugins/peak-rate/invariant": "./lib/plugins/peak-rate/invariant.js",
     "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
