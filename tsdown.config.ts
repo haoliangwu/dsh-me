@@ -45,6 +45,7 @@ export default defineConfig([
     entry: {
       index: 'src/index.ts',
       'plugins/peak-rate': 'src/plugins/peak-rate/index.ts',
+      'plugins/x-opencode-session-shim': 'src/plugins/x-opencode-session-shim/index.ts',
     },
     outDir: 'lib',
     format: ['esm'],

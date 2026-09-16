@@ -17,6 +17,7 @@ dsh plugin --profile web add github:haoliangwu/dsh-me
 | 插件 | id | 说明 |
 |---|---|---|
 | peak-rate | `dsh-ui-peak-rate` | 会话模型命中配置的 provider 列表且处于高峰计费时段（工作日 UTC 窗口，周末全天低峰）时，在输入框尾部显示 🔥 2× 徽章 |
+| x-opencode-session-shim | `dsh-x-opencode-session-shim` | OpenCode Go（`opencode-go` provider）要求每个请求携带 `x-opencode-session`（否则 400 MissingSessionID），而 pi-ai 与 dsh 的 llm-pi-ai 均无此 header。插件 patch host 进程 `globalThis.fetch`（effect-scoped 可恢复），对 `https://opencode.ai/zen/go` 的请求注入当前 dsh 会话 id；agentless 调用回退固定值 `dsh`。无配置项。 |
 
 ![peak-rate badge](docs/peak-rate-badge.png)
 
