@@ -1,0 +1,5 @@
+# Build artifacts are committed for one-line git install (no prepare script needed).
+# Source maps are committed alongside lib/.
+node_modules/
+.DS_Store
+*.log

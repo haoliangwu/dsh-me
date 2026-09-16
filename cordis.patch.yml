@@ -1,0 +1,12 @@
+# dsh-me bundle: one row per bundled plugin, addressed by profile layers
+# (and the user's cordis.patch.yml) by id. Sub-plugin ids keep their
+# historical names so existing profile config rows keep applying.
+#
+# The dsh-me root row anchors the merged client bundle: dsh-client-modules
+# keys the dsh.client scan on a fiber's package-root entry name (subpath
+# fibers are skipped), so exactly one fiber must mount the bare package.
+- insert:
+    - id: dsh-me
+      name: dsh-me
+    - id: dsh-ui-peak-rate
+      name: dsh-me/plugins/peak-rate
