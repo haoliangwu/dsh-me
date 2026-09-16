@@ -7,6 +7,7 @@ describe('Config schema', () => {
       notifyCompletion: true,
       notifyError: true,
       notifyQuestion: true,
+      notifySound: true,
     })
   })
 
@@ -15,18 +16,26 @@ describe('Config schema', () => {
       notifyCompletion: true,
       notifyError: false,
       notifyQuestion: true,
+      notifySound: true,
     })
   })
 
   it('accepts a full config', () => {
-    expect(Config({ notifyCompletion: false, notifyError: false, notifyQuestion: false })).toEqual({
+    expect(Config({
+      notifyCompletion: false, notifyError: false, notifyQuestion: false, notifySound: false,
+    })).toEqual({
       notifyCompletion: false,
       notifyError: false,
       notifyQuestion: false,
+      notifySound: false,
     })
   })
 
   it('rejects a non-boolean toggle', () => {
     expect(() => Config({ notifyCompletion: 'yes' } as never)).toThrow()
+  })
+
+  it('rejects a non-boolean notifySound', () => {
+    expect(() => Config({ notifySound: 'yes' } as never)).toThrow()
   })
 })

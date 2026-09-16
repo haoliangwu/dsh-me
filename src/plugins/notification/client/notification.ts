@@ -183,3 +183,47 @@ export function pendingQuestionNotifications(
   }
   return { keys, fired }
 }
+
+/** The Web Audio surface `playChime` needs (structural). */
+export interface AudioContextLike {
+  readonly currentTime: number
+  readonly destination: unknown
+  createOscillator(): {
+    connect(node: unknown): void
+    start(when?: number): void
+    stop(when?: number): void
+    frequency: { value: number }
+  }
+  createGain(): {
+    gain: {
+      setValueAtTime(v: number, t: number): void
+      exponentialRampToValueAtTime(v: number, t: number): void
+    }
+    connect(node: unknown): void
+  }
+}
+
+/**
+ * Synthesize the two-tone notification chime on a Web Audio graph: sine tone A
+ * (880 Hz) over `at`..`at+0.09`, tone B (1174.66 Hz, D6) over
+ * `at+0.10`..`at+0.19`, each with a 10 ms attack and exponential decay to
+ * silence. Pure over the context-like so the scheduling is unit-testable.
+ * @param ac - the (real or fake) audio context.
+ * @param at - the chime's start in context seconds (defaults to now).
+ */
+export function playChime(ac: AudioContextLike, at = ac.currentTime): void {
+  const tone = (frequency: number, start: number, end: number): void => {
+    const oscillator = ac.createOscillator()
+    oscillator.frequency.value = frequency
+    const gain = ac.createGain()
+    gain.connect(ac.destination)
+    oscillator.connect(gain)
+    gain.gain.setValueAtTime(0.0001, start)
+    gain.gain.exponentialRampToValueAtTime(0.18, start + 0.01)
+    gain.gain.exponentialRampToValueAtTime(0.0001, end)
+    oscillator.start(start)
+    oscillator.stop(end)
+  }
+  tone(880, at, at + 0.09)
+  tone(1174.66, at + 0.1, at + 0.19)
+}

@@ -32,12 +32,15 @@ export interface Config {
   notifyError?: boolean
   /** Notify when the agent asks the user a question (default: true). */
   notifyQuestion?: boolean
+  /** Play the synthesized chime instead of the OS default sound (default: true). */
+  notifySound?: boolean
 }
 
 export const Config = z.object({
   notifyCompletion: z.boolean().default(true),
   notifyError: z.boolean().default(true),
   notifyQuestion: z.boolean().default(true),
+  notifySound: z.boolean().default(true),
 })
 
 /** Response payload for the `config` endpoint. */
@@ -45,6 +48,7 @@ interface ConfigResponse {
   readonly notifyCompletion: boolean
   readonly notifyError: boolean
   readonly notifyQuestion: boolean
+  readonly notifySound: boolean
 }
 
 /** RPC channel owned by this plugin. */
@@ -63,6 +67,7 @@ export function apply(ctx: Context, config: Config): void {
     notifyCompletion: config.notifyCompletion as boolean,
     notifyError: config.notifyError as boolean,
     notifyQuestion: config.notifyQuestion as boolean,
+    notifySound: config.notifySound as boolean,
   }
   // dsh-client-connection 0.1.5-rc.2: connection.rpc.handle() is unusable from
   // the profile plugin tree — the connection service is provided inside the

@@ -3,14 +3,69 @@ import {
   assistantTurnText,
   bodyForTurnEnd,
   pendingQuestionNotifications,
+  playChime,
   questionBody,
   shouldNotify,
   titleFor,
   truncate,
   turnEndOutcome,
+  type AudioContextLike,
   type PendingInteractionShape,
   type SessionEventLikeEntryShape,
 } from './notification.ts'
+
+interface ToneRecord {
+  readonly frequency: number
+  readonly startedAt: number
+  readonly stoppedAt: number
+  readonly oscConnectedTo: unknown
+  readonly gainConnectedTo: unknown
+  readonly envelope: readonly { op: 'set' | 'ramp'; v: number; t: number }[]
+}
+
+/** Fake audio context recording every scheduling call playChime makes. */
+function fakeAudioContext(): { ac: AudioContextLike; tones: ToneRecord[] } {
+  const tones: ToneRecord[] = []
+  const destination = {}
+  const ac: AudioContextLike = {
+    currentTime: 10,
+    destination,
+    createOscillator: () => {
+      const record: ToneRecord = {
+        frequency: 0, startedAt: -1, stoppedAt: -1,
+        oscConnectedTo: null, gainConnectedTo: null, envelope: [],
+      }
+      tones.push(record)
+      return {
+        frequency: {
+          set value(v: number) { record.frequency = v },
+        },
+        connect: (node: unknown) => { record.oscConnectedTo = node },
+        start: (when?: number) => { record.startedAt = when ?? -1 },
+        stop: (when?: number) => { record.stoppedAt = when ?? -1 },
+      }
+    },
+    createGain: () => {
+      const record = tones[tones.length - 1] as unknown as {
+        gainConnectedTo: unknown
+        envelope: ToneRecord['envelope']
+      }
+      const gainNode = {}
+      return {
+        gain: {
+          setValueAtTime: (v: number, t: number) => {
+            record.envelope = [...record.envelope, { op: 'set', v, t }]
+          },
+          exponentialRampToValueAtTime: (v: number, t: number) => {
+            record.envelope = [...record.envelope, { op: 'ramp', v, t }]
+          },
+        },
+        connect: (node: unknown) => { record.gainConnectedTo = node },
+      }
+    },
+  }
+  return { ac, tones }
+}
 
 function interaction(
   key: string,
@@ -167,6 +222,50 @@ describe('question payloads', () => {
     expect(titleFor('completion', 'my-session')).toBe('[dsh] 完成：my-session')
     expect(titleFor('error', 'my-session')).toBe('[dsh] 错误：my-session')
     expect(titleFor('question', 'my-session')).toBe('[dsh] 提问：my-session')
+  })
+})
+
+describe('playChime', () => {
+  it('plays two tones with the D6 answer at the default context time', () => {
+    const { ac, tones } = fakeAudioContext()
+    playChime(ac)
+    expect(tones).toHaveLength(2)
+    expect(tones.map(t => t.frequency)).toEqual([880, 1174.66])
+    expect(tones.map(t => t.startedAt)).toEqual([10, 10.1])
+    expect(tones.map(t => t.stoppedAt)).toEqual([10.09, 10.19])
+  })
+
+  it('honours an explicit start offset', () => {
+    const { ac, tones } = fakeAudioContext()
+    playChime(ac, 5)
+    expect(tones.map(t => t.startedAt)).toEqual([5, 5.1])
+    expect(tones.map(t => t.stoppedAt)).toEqual([5.09, 5.19])
+  })
+
+  it('schedules gain attack and exponential decay per tone', () => {
+    const { ac, tones } = fakeAudioContext()
+    playChime(ac, 10)
+    expect(tones[0]?.envelope).toEqual([
+      { op: 'set', v: 0.0001, t: 10 },
+      { op: 'ramp', v: 0.18, t: 10.01 },
+      { op: 'ramp', v: 0.0001, t: 10.09 },
+    ])
+    expect(tones[1]?.envelope).toEqual([
+      { op: 'set', v: 0.0001, t: 10.1 },
+      { op: 'ramp', v: 0.18, t: 10.11 },
+      { op: 'ramp', v: 0.0001, t: 10.19 },
+    ])
+  })
+
+  it('wires each oscillator through its gain into the destination', () => {
+    const { ac, tones } = fakeAudioContext()
+    playChime(ac)
+    for (const tone of tones) {
+      expect(tone.oscConnectedTo).not.toBeNull()
+      expect(tone.gainConnectedTo).toBe(ac.destination)
+    }
+    // The two oscillators route through two distinct gain nodes, not one shared chain.
+    expect(tones[0]?.oscConnectedTo).not.toBe(tones[1]?.oscConnectedTo)
   })
 })
 

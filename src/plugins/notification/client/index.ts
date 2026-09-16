@@ -21,10 +21,12 @@ import {
   assistantTurnText,
   bodyForTurnEnd,
   pendingQuestionNotifications,
+  playChime,
   questionBody,
   shouldNotify,
   titleFor,
   turnEndOutcome,
+  type AudioContextLike,
   type NotifyFn,
   type PendingInteractionShape,
   type SessionEventLikeEntryShape,
@@ -42,6 +44,8 @@ interface ConfigResponse {
   readonly notifyCompletion: boolean
   readonly notifyError: boolean
   readonly notifyQuestion: boolean
+  /** Play the synthesized chime instead of the OS default sound. */
+  readonly notifySound: boolean
 }
 
 /** Default toggles while the host fetch is in flight or absent. */
@@ -49,6 +53,7 @@ const DEFAULT_CONFIG: ConfigResponse = {
   notifyCompletion: true,
   notifyError: true,
   notifyQuestion: true,
+  notifySound: true,
 }
 
 /** Structural session-event entry/change faces the browser session window exposes. */
@@ -99,6 +104,7 @@ export function apply(ctx: ClientContext): void {
           notifyCompletion: result.value.notifyCompletion ?? config.notifyCompletion,
           notifyError: result.value.notifyError ?? config.notifyError,
           notifyQuestion: result.value.notifyQuestion ?? config.notifyQuestion,
+          notifySound: result.value.notifySound ?? config.notifySound,
         }
       }
     } catch (error) {
@@ -110,7 +116,7 @@ export function apply(ctx: ClientContext): void {
   // unsupported stays silent forever after (spec).
   let permission: 'unrequested' | 'requesting' | 'granted' | 'denied' = 'unrequested'
   const notify: NotifyFn = (title, body) => {
-    void notifyWithApi(title, body, () => permission, state => { permission = state })
+    void notifyWithApi(title, body, config.notifySound, () => permission, state => { permission = state })
   }
 
   // Visibility + config-toggle gate (the tested shouldNotify) then emit.
@@ -191,26 +197,31 @@ export function apply(ctx: ClientContext): void {
 
 /**
  * Request Notification permission lazily and emit once granted; every other
- * state (denied, already requesting, unsupported browser) stays silent.
+ * state (denied, already requesting, unsupported browser) stays silent. The
+ * OS default sound is suppressed (`silent: true`); when `sound` is set the
+ * synthesized chime replaces it.
  * @param title - the notification title.
  * @param body - the notification body.
+ * @param sound - whether to play the synthesized chime on emit.
  * @param readState - current permission state reader (test seam).
  * @param writeState - permission state writer (test seam).
  */
 export async function notifyWithApi(
   title: string,
   body: string,
+  sound: boolean,
   readState: () => 'unrequested' | 'requesting' | 'granted' | 'denied',
   writeState: (next: 'unrequested' | 'requesting' | 'granted' | 'denied') => void,
 ): Promise<void> {
   const Api = (globalThis as { Notification?: NotificationApi }).Notification
   if (Api === undefined || typeof Api.requestPermission !== 'function') return
   const emit = (): void => {
-    const notification = new Api(title, { body })
+    const notification = new Api(title, { body, silent: true })
     notification.onclick = () => {
       globalThis.focus()
       notification.close()
     }
+    if (sound) chimeSound()
   }
   const current = readState()
   if (current === 'granted') {
@@ -228,11 +239,28 @@ export async function notifyWithApi(
   }
 }
 
+/** Lazy singleton audio context (browser half, one page lifetime). */
+let chimeAudioContext: (AudioContextLike & { resume(): Promise<void> }) | undefined
+
+/**
+ * Play the synthesized chime: acquire the real AudioContext once per page,
+ * resume it (autoplay-policy: the user has interacted with dsh before any
+ * notification fires, so this normally resolves; a failure just stays silent)
+ * and schedule the two tones.
+ */
+function chimeSound(): void {
+  const Ctor = (globalThis as { AudioContext?: new () => AudioContextLike & { resume(): Promise<void> } }).AudioContext
+  if (Ctor === undefined) return
+  if (chimeAudioContext === undefined) chimeAudioContext = new Ctor()
+  void chimeAudioContext.resume().catch(() => {})
+  playChime(chimeAudioContext)
+}
+
 /** Structural Notification API surface (denied/unsupported → silent). */
 interface NotificationApi {
   readonly permission: string
   requestPermission(): Promise<string>
-  new (title: string, options?: { readonly body?: string }): {
+  new (title: string, options?: { readonly body?: string; readonly silent?: boolean }): {
     onclick: ((this: unknown, ev: unknown) => void) | null
     close(): void
   }
