@@ -38,7 +38,7 @@ git pull && pnpm build
 | x-opencode-session-shim | `dsh-x-opencode-session-shim` | 给 opencode-go 请求补上 `x-opencode-session`，消除 Console Go 的 400 MissingSessionID |
 | notification | `dsh-ui-notification` | 会话完成/出错/提问时（页面后台）发桌面通知，附 Web Audio 双音提示，三个触发开关独立配置 |
 
-![peak-rate badge](docs/peak-rate-badge.png)
+![dsh](docs/dsh.jpg)
 
 ## 快速上手
 
