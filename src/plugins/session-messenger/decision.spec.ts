@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
+  deliveryCatalog,
   hopOfLastUserMessage,
   nextHop,
   planDelivery,
   relayBody,
   resolveTarget,
+  sameWorkspace,
   type DeliveryPlanInput,
   type TargetLike,
 } from './decision.ts'
@@ -98,6 +100,49 @@ describe('nextHop (hop gate arithmetic)', () => {
   it('refuses a delivery that would exceed maxHops', () => {
     expect(nextHop(5, 5)).toBeUndefined()
     expect(nextHop(6, 5)).toBeUndefined()
+  })
+})
+
+describe('sameWorkspace (catalog scope)', () => {
+  const sessions = [
+    { id: 's1', header: { cwd: '/work/a' } },
+    { id: 's2', header: { cwd: '/work/a' } },
+    { id: 's3', header: { cwd: '/work/b' } },
+    { id: 's4', header: {} },
+  ]
+
+  it('keeps the caller and same-cwd sessions, drops other and cwd-less workspaces', () => {
+    expect(sameWorkspace(sessions, '/work/a').map(s => s.id)).toEqual(['s1', 's2'])
+  })
+
+  it('matches a cwd-less caller only against cwd-less sessions', () => {
+    expect(sameWorkspace(sessions, undefined).map(s => s.id)).toEqual(['s4'])
+  })
+
+  it('returns nothing for an empty list', () => {
+    expect(sameWorkspace([], '/work/a')).toEqual([])
+  })
+})
+
+describe('deliveryCatalog (list_sessions rows)', () => {
+  it('carries sessionId, title, and status for every entry', () => {
+    expect(deliveryCatalog([
+      { sessionId: 's1', title: '规划会话', running: true },
+      { sessionId: 's2', title: '执行会话', running: false },
+    ])).toEqual([
+      { sessionId: 's1', title: '规划会话', status: '运行中' },
+      { sessionId: 's2', title: '执行会话', status: '空闲' },
+    ])
+  })
+
+  it('renders a missing title as an empty string', () => {
+    expect(deliveryCatalog([{ sessionId: 's3', title: undefined, running: false }]))
+      .toEqual([{ sessionId: 's3', title: '', status: '空闲' }])
+  })
+
+  it('lists an agentless session as 空闲', () => {
+    expect(deliveryCatalog([{ sessionId: 's4', title: undefined, running: false }]))
+      .toEqual([{ sessionId: 's4', title: '', status: '空闲' }])
   })
 })
 

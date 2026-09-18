@@ -99,6 +99,57 @@ export function nextHop(sourceHop: number | undefined, maxHops: number): number 
  * @param text - the tool's message text.
  * @returns the full user-message text.
  */
+/** One relay-candidate session as the catalog needs it (structural). */
+export interface CatalogCandidateLike {
+  readonly id: string
+  readonly header: { readonly cwd?: string }
+}
+
+/**
+ * Same-workspace scope (spec): strict `header.cwd` equality with the caller,
+ * self included — a session with a different or defined-but-mismatched cwd
+ * is not an addressable target.
+ * @param candidates - every live session.
+ * @param cwd - the calling session's cwd.
+ * @returns the same-workspace subset.
+ */
+export function sameWorkspace(
+  candidates: readonly CatalogCandidateLike[],
+  cwd: string | undefined,
+): readonly CatalogCandidateLike[] {
+  return candidates.filter(candidate => candidate.header.cwd === cwd)
+}
+
+/** One catalog row input: identity, title, and live running flag. */
+export interface CatalogSessionEntry {
+  readonly sessionId: string
+  readonly title: string | undefined
+  readonly running: boolean
+}
+
+/** One deliverable catalog row as the tool returns it. */
+export interface CatalogRow {
+  readonly sessionId: string
+  readonly title: string
+  readonly status: '运行中' | '空闲'
+}
+
+/**
+ * Shape the deliverable catalog: session id, 标题 ('' when the session has
+ * none yet), and 状态 — 运行中 when its agent is mid-turn, 空闲 otherwise
+ * (a session without a live agent lists as 空闲; delivery to it errors
+ * later with 无存活 agent).
+ * @param entries - same-workspace sessions with running flags.
+ * @returns the tool's catalog rows.
+ */
+export function deliveryCatalog(entries: readonly CatalogSessionEntry[]): readonly CatalogRow[] {
+  return entries.map(entry => ({
+    sessionId: entry.sessionId,
+    title: entry.title ?? '',
+    status: entry.running ? '运行中' : '空闲',
+  }))
+}
+
 export function relayBody(senderTitle: string | undefined, senderSessionId: string, text: string): string {
   return `来自会话 ${senderTitle ?? senderSessionId}\n\n${text}`
 }
