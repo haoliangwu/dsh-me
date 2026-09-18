@@ -15,3 +15,10 @@ Domain glossary for dsh-me. Terms resolve here; implementation details stay in s
 - **完成**: agent 回合正常结束（`turn/end`，completed；max-tokens 视为完成但注明截断）。
 - **错误**: agent 回合以失败告终（`turn/end`，error，携带 LlmFailure）。
 - **静默策略**: 页面可见时不打扰 — 仅在页面隐藏/失焦时弹通知。
+
+## 会话通信域（session-messenger）
+
+- **会话通信**: 同 workspace 内一个会话的 agent 通过工具把消息投递给另一会话，目标以主 agent 身份开回合处理的机制。非 subagent。
+- **投递**: 消息以带来源标记的 user message 进入目标会话 next-turn inbox（followup）；目标忙则天然排队。
+- **回信**: 目标回合结束后，末轮 assistant 回复（completed/max-tokens，error 附错误摘要）自动注入回发送方会话；发送方空闲且 autoWake 开启时自动开新回合。
+- **深度闸（hop）**: 仅插件注入的消息累积跳数计数（每次投递 +1），超过 maxHops 拒绝投递；人类用户亲手输入天然重置为新链起点。

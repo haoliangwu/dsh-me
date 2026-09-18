@@ -46,6 +46,7 @@ export default defineConfig([
       index: 'src/index.ts',
       'plugins/peak-rate': 'src/plugins/peak-rate/index.ts',
       'plugins/notification': 'src/plugins/notification/index.ts',
+      'plugins/session-messenger': 'src/plugins/session-messenger/index.ts',
       'plugins/x-opencode-session-shim': 'src/plugins/x-opencode-session-shim/index.ts',
     },
     outDir: 'lib',
