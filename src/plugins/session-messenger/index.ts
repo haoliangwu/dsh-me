@@ -8,21 +8,26 @@
  * delivery path (`ctx.agents.get(targetId) → agent.followup(message)` =
  * next-turn inbox + wake; a busy target naturally queues). Relay messages
  * carry a hop counter (only plugin deliveries accumulate; human input resets
- * the chain) that is depth-gated send-side against `maxHops`. Ticket 03 adds
- * reply routing. `autoWake` is declared now (default true) and consumed by
- * ticket 03 only.
+ * the chain) that is depth-gated send-side against `maxHops`. When a relay's
+ * turn ends on the target, the reply routes back to the sender through the
+ * same delivery seam (autoWake=true wakes; false parks in the next-turn
+ * inbox). `autoWake` is consumed by that reply routing.
  */
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   MESSAGE_SOURCE_KIND,
+  assistantTextOfTurn,
   deliveryCatalog,
   hopOfLastUserMessage,
   planDelivery,
+  planReply,
   sameWorkspace,
   type CatalogSessionEntry,
+  type SessionEventLike,
   type TargetLike,
+  type TurnEndReasonShape,
 } from './decision.ts'
 
 /** Cordis plugin name. */
@@ -65,12 +70,15 @@ interface AgentLike {
   readonly session: SessionLike
   readonly status: 'idle' | 'running'
   followup(message: RelayMessage): void
+  send(message: RelayMessage, target: 'next-turn', wakeup: boolean): void
 }
 
 /** The service slices this plugin reads (structural). */
 interface MessengerCtx {
   agents: { get(id: string): AgentLike | undefined }
   sessions: { list(): readonly SessionLike[] }
+  on(event: 'session/event', listener: (session: SessionLike, event: SessionEventLike) => void): () => void
+  on(event: 'session/disposed', listener: (session: SessionLike) => void): () => void
 }
 
 /** Fold the latest logged title like the session-title service does. */
@@ -92,6 +100,16 @@ function messageId(): string {
   return `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 }
 
+/** Build one relay user message with the plugin's source kind and chain hop. */
+function relayMessageFor(body: string, hop: number): RelayMessage {
+  return {
+    id: messageId(),
+    role: 'user',
+    content: [{ type: 'text', text: body }],
+    source: { kind: MESSAGE_SOURCE_KIND, hop },
+  }
+}
+
 /**
  * Mount the `list_sessions` and `relay_message` tools for every session agent
  * (standing registration, the ask-user pattern).
@@ -111,6 +129,80 @@ export function apply(ctx: Context, config: Config): void {
       title: titleOf(session),
       running: scoped.agents.get(session.id)?.status === 'running',
     }))
+
+  // ── reply routing (ticket 03) ─────────────────────────────────────────────
+  // One watch per delivered relay, keyed by the relay message id: when the
+  // target session logs that message (its turn claimed the relay) `seen`
+  // flips, and the next `turn/end` of that session routes the reply back to
+  // the sender (spec policy via planReply) then removes the watch. Human-typed
+  // turns never trigger replies — only turns that claimed one of our relays
+  // can flip `seen`. Entries are effect-scoped (plugin unload disposes the
+  // listeners) and also dropped when the target session is disposed.
+  interface RelayWatch {
+    readonly senderId: string
+    readonly targetId: string
+    readonly messageId: string
+    readonly hop: number
+    seen: boolean
+  }
+  const watches = new Map<string, RelayWatch>()
+  const deliverReply = (watch: RelayWatch, session: SessionLike, turn: number, reason: TurnEndReasonShape): void => {
+    const targetTitle = titleOf(session)
+    const plan = planReply({
+      reason,
+      turn,
+      target: { sessionId: session.id, title: targetTitle },
+      assistantText: assistantTextOfTurn(session.snapshotEvents(), turn),
+      sourceHop: watch.hop,
+      maxHops: config.maxHops as number,
+    })
+    if (plan.kind === 'none') {
+      // Over-limit or non-replying reason: skip silently for the turn, never
+      // throw into it — replies are best-effort background routing (spec).
+      ctx.logger.info(`[session-messenger] no reply for ${watch.messageId} (turn ${String(turn)})`)
+      return
+    }
+    const sender = scoped.agents.get(watch.senderId)
+    if (sender === undefined) {
+      // Sender is no longer live on this host: skip (spec).
+      ctx.logger.info(`[session-messenger] sender ${watch.senderId} not live; reply skipped`)
+      return
+    }
+    const message = relayMessageFor(plan.body, plan.hop)
+    if (config.autoWake !== false) {
+      sender.followup(message)
+    } else {
+      // autoWake=false: durable next-turn delivery WITHOUT wakeup — the reply
+      // sits in the sender's next-turn inbox until the next natural drive.
+      sender.send(message, 'next-turn', false)
+    }
+  }
+  ctx.on('session/event', (session, event) => {
+    if (event.type === 'user/message') {
+      const id = (event.data as { id?: unknown } | undefined)?.id
+      if (typeof id !== 'string') return
+      const watch = watches.get(id)
+      if (watch !== undefined) watch.seen = true
+      return
+    }
+    if (event.type !== 'turn/end') return
+    const data = event.data as { turn?: unknown; reason?: TurnEndReasonShape } | undefined
+    if (data === undefined || typeof data.turn !== 'number' || data.reason === undefined) return
+    // Only turns that claimed one of our delivered relays flip `seen`; human
+    // turns never trigger a reply. The relay message is the sole ordinary
+    // message of its own turn, so at most one watch can be seen per turn.
+    const watch = [...watches.values()].find(candidate => candidate.targetId === session.id && candidate.seen)
+    if (watch === undefined) return
+    watches.delete(watch.messageId)
+    deliverReply(watch, session, data.turn, data.reason)
+  })
+  // Drop watches whose relay target was disposed before the relay was claimed;
+  // listener teardown on plugin unload covers the rest (effect-scoped, no leaks).
+  ctx.on('session/disposed', (session) => {
+    for (const [messageId, watch] of watches) {
+      if (watch.targetId === session.id) watches.delete(messageId)
+    }
+  })
 
   ctx.tools.register(defineTool({
     name: 'list_sessions',
@@ -219,15 +311,18 @@ export function apply(ctx: Context, config: Config): void {
       if (target === undefined) {
         throw new Error(`目标会话 ${plan.targetId} 无存活 agent（无法开回合），请稍后重试`)
       }
-      const message: RelayMessage = {
-        id: messageId(),
-        role: 'user',
-        content: [{ type: 'text', text: plan.body }],
-        source: { kind: MESSAGE_SOURCE_KIND, hop: plan.hop },
-      }
+      const message = relayMessageFor(plan.body, plan.hop)
       // next-turn inbox + wake: an idle target starts a turn, a busy target
       // queues and consumes the message after its current turn (spec).
       target.followup(message)
+      // Arm the reply route: watch the target for the turn this relay starts.
+      watches.set(message.id, {
+        senderId: caller.id,
+        targetId: plan.targetId,
+        messageId: message.id,
+        hop: plan.hop,
+        seen: false,
+      })
       return { delivered: true, sessionId: plan.targetId }
     },
   }))

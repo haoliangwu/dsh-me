@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import {
+  REPLY_TRUNCATION_NOTE,
+  assistantTextOfTurn,
   deliveryCatalog,
   hopOfLastUserMessage,
   nextHop,
   planDelivery,
+  planReply,
   relayBody,
+  replyBody,
+  replyPolicy,
   resolveTarget,
   sameWorkspace,
   type DeliveryPlanInput,
+  type ReplyPlanInput,
   type TargetLike,
 } from './decision.ts'
 
@@ -143,6 +149,118 @@ describe('deliveryCatalog (list_sessions rows)', () => {
   it('lists an agentless session as 空闲', () => {
     expect(deliveryCatalog([{ sessionId: 's4', title: undefined, running: false }]))
       .toEqual([{ sessionId: 's4', title: '', status: '空闲' }])
+  })
+})
+
+describe('replyPolicy (turn/end three-state decision)', () => {
+  it('replies for completed and max-tokens', () => {
+    expect(replyPolicy({ kind: 'completed' })).toBe('assistant')
+    expect(replyPolicy({ kind: 'max-tokens' })).toBe('assistant')
+  })
+
+  it('replies with an error summary for error', () => {
+    expect(replyPolicy({ kind: 'error', error: { message: 'boom' } })).toBe('error')
+  })
+
+  it('never replies for aborted with any internal cause', () => {
+    for (const reason of ['user', 'parent', 'hook', 'disposed', 'legacy']) {
+      expect(replyPolicy({ kind: 'aborted', reason: { kind: reason } })).toBe('none')
+    }
+  })
+
+  it('never replies for blocked, interrupted, or unknown kinds', () => {
+    expect(replyPolicy({ kind: 'blocked' })).toBe('none')
+    expect(replyPolicy({ kind: 'interrupted' })).toBe('none')
+    expect(replyPolicy({ kind: 'future-kind' })).toBe('none')
+  })
+
+  it('never replies for a missing reason', () => {
+    expect(replyPolicy(undefined as never)).toBe('none')
+  })
+})
+
+describe('assistantTextOfTurn', () => {
+  const assistant = (turn: number, text: string) => ({
+    type: 'assistant/message',
+    data: { turn, step: 0, message: { content: [{ type: 'text', text }] } },
+  })
+
+  it('joins the text of the turn final assistant message', () => {
+    const events = [assistant(1, 'first'), assistant(1, 'final'), assistant(2, 'other')]
+    expect(assistantTextOfTurn(events, 1)).toBe('final')
+  })
+
+  it('returns empty when the turn has no assistant message', () => {
+    expect(assistantTextOfTurn([assistant(3, 'x')], 9)).toBe('')
+  })
+
+  it('ignores non-message and transient events', () => {
+    const events = [{ type: 'user/message', data: {} }, { type: 'turn/end', data: {} }, assistant(1, 'ok')]
+    expect(assistantTextOfTurn(events, 1)).toBe('ok')
+  })
+})
+
+describe('replyBody', () => {
+  it('formats the provenance header with turn number and content', () => {
+    expect(replyBody('执行会话', 'sess-b', 7, '做完了', false))
+      .toBe('来自 执行会话 的回复（turn 7）\n\n做完了')
+  })
+
+  it('falls back to the session id without a title', () => {
+    expect(replyBody(undefined, 'sess-b', 3, 'hi', false))
+      .toBe('来自 sess-b 的回复（turn 3）\n\nhi')
+  })
+
+  it('appends the truncation note for max-tokens turns', () => {
+    expect(replyBody('b', 's', 1, 'partial', true))
+      .toBe(`来自 b 的回复（turn 1）\n\npartial ${REPLY_TRUNCATION_NOTE}`)
+  })
+
+  it('keeps the header even with empty content', () => {
+    expect(replyBody('b', 's', 2, '', false)).toBe('来自 b 的回复（turn 2）')
+  })
+})
+
+describe('planReply (whole reply decision)', () => {
+  const input = (overrides: Partial<ReplyPlanInput> = {}): ReplyPlanInput => ({
+    reason: { kind: 'completed' },
+    turn: 7,
+    target: { sessionId: 'sess-b', title: '执行会话' },
+    assistantText: '做完了',
+    sourceHop: 2,
+    maxHops: 5,
+    ...overrides,
+  })
+
+  it('routes a completed turn reply with hop + 1', () => {
+    expect(planReply(input())).toEqual({
+      kind: 'reply',
+      body: '来自 执行会话 的回复（turn 7）\n\n做完了',
+      hop: 3,
+    })
+  })
+
+  it('appends the truncation note for max-tokens', () => {
+    const plan = planReply(input({ reason: { kind: 'max-tokens' } }))
+    expect(plan).toMatchObject({ kind: 'reply', hop: 3 })
+    if (plan.kind === 'reply') expect(plan.body).toContain('做完了 （已达 max-tokens，输出被截断）')
+  })
+
+  it('routes an error summary for error turns', () => {
+    const plan = planReply(input({ reason: { kind: 'error', error: { message: 'LLM 挂了' } } }))
+    expect(plan).toMatchObject({ kind: 'reply' })
+    if (plan.kind === 'reply') expect(plan.body).toContain('LLM 挂了')
+  })
+
+  it('stays silent for non-replying reasons', () => {
+    expect(planReply(input({ reason: { kind: 'aborted', reason: { kind: 'user' } } }))).toEqual({ kind: 'none' })
+    expect(planReply(input({ reason: { kind: 'blocked' } }))).toEqual({ kind: 'none' })
+    expect(planReply(input({ reason: { kind: 'interrupted' } }))).toEqual({ kind: 'none' })
+  })
+
+  it('refuses the reply silently when the chain would exceed maxHops', () => {
+    expect(planReply(input({ sourceHop: 5 }))).toEqual({ kind: 'none' })
+    expect(planReply(input({ reason: { kind: 'error', error: { message: 'x' } }, sourceHop: 5 }))).toEqual({ kind: 'none' })
   })
 })
 

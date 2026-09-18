@@ -50,10 +50,10 @@ export function resolveTarget(
   return { kind: 'ambiguous', candidates: byTitle }
 }
 
-/** One session-log event as the hop reader needs it (structural). */
+/** One session-log event as the decision readers need it (structural). */
 export interface SessionEventLike {
   readonly type: string
-  readonly data?: { readonly source?: { readonly kind?: unknown; readonly hop?: unknown } }
+  readonly data?: unknown
 }
 
 /**
@@ -68,7 +68,7 @@ export function hopOfLastUserMessage(events: readonly SessionEventLike[]): numbe
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
     if (event.type !== 'user/message') continue
-    const source = event.data?.source
+    const source = (event.data as { source?: { kind?: unknown; hop?: unknown } } | undefined)?.source
     if (source?.kind !== MESSAGE_SOURCE_KIND) return undefined
     return typeof source.hop === 'number' && Number.isSafeInteger(source.hop) && source.hop >= 0
       ? source.hop
@@ -215,5 +215,136 @@ export function planDelivery(input: DeliveryPlanInput): DeliveryPlan {
         kind: 'blocked',
         error: `未找到目标会话「${input.to}」：它不是已知的 session id，也没有唯一的标题与之匹配`,
       }
+  }
+}
+
+// ── reply routing (ticket 03) ────────────────────────────────────────────────
+
+/** The reason payload of a durable `turn/end` event (structural). */
+export interface TurnEndReasonShape {
+  readonly kind: string
+  readonly error?: { readonly message?: string }
+}
+
+/** Which end-reason policy a reply follows (conservative: only the three spec'd kinds reply). */
+export type ReplyPolicy = 'assistant' | 'error' | 'none'
+
+/**
+ * Reply policy for one `turn/end` reason: `completed` and `max-tokens` reply
+ * with the turn's final assistant text (max-tokens carries a truncation
+ * note), `error` replies with the LlmFailure message. Everything else —
+ * `aborted` with any internal cause (user/parent/hook/disposed/legacy),
+ * `blocked`, `interrupted`, and unknown merge-extensible kinds — never
+ * replies (conservative: an unhandled reason must not fabricate a response).
+ * @param reason - the `turn/end` reason payload.
+ * @returns the reply policy.
+ */
+export function replyPolicy(reason: TurnEndReasonShape): ReplyPolicy {
+  switch (reason?.kind) {
+    case 'completed':
+    case 'max-tokens':
+      return 'assistant'
+    case 'error':
+      return 'error'
+    default:
+      return 'none'
+  }
+}
+
+/** Appended when the reply turn ended at the output-token ceiling (spec: 注明截断). */
+export const REPLY_TRUNCATION_NOTE = '（已达 max-tokens，输出被截断）'
+
+/** Fallback content when an error turn carries no failure message. */
+export const REPLY_ERROR_FALLBACK = '目标会话回合失败（无错误详情）'
+
+/**
+ * Plain-text join of one turn's final `assistant/message` text blocks (the
+ * same fold the notification plugin uses; the reply needs the target's last
+ * reply text, spec: 末轮 assistant 文本).
+ * @param events - the target session's event log.
+ * @param turn - the ended turn number.
+ * @returns the turn's final assistant text, or '' when none.
+ */
+export function assistantTextOfTurn(events: readonly SessionEventLike[], turn: number): string {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event.type !== 'assistant/message') continue
+    const data = event.data as { turn?: unknown; message?: { content?: unknown } } | undefined
+    if (data?.turn !== turn) continue
+    const content = Array.isArray(data.message?.content) ? data.message.content : []
+    const blocks = content.filter((block): block is { type: 'text'; text: string } => {
+      if (typeof block !== 'object' || block === null) return false
+      const candidate = block as { type?: unknown; text?: unknown }
+      return candidate.type === 'text' && typeof candidate.text === 'string'
+    })
+    return blocks.map(block => block.text).join(' ').trim()
+  }
+  return ''
+}
+
+/**
+ * Reply body with its provenance header (spec): 「来自 <target title> 的回复
+ * （turn N）」 over the assistant text (or error summary), titled by the
+ * replier's title or fallback id.
+ * @param targetTitle - the replier session's title (if any).
+ * @param targetSessionId - the replier session's id.
+ * @param turn - the ended turn number.
+ * @param content - the reply content (assistant text or error summary).
+ * @param truncated - whether the turn hit `max-tokens` (appends the note).
+ * @returns the full reply body.
+ */
+export function replyBody(
+  targetTitle: string | undefined,
+  targetSessionId: string,
+  turn: number,
+  content: string,
+  truncated: boolean,
+): string {
+  const header = `来自 ${targetTitle ?? targetSessionId} 的回复（turn ${turn}）`
+  const note = truncated ? REPLY_TRUNCATION_NOTE : ''
+  return content.length === 0
+    ? (note.length === 0 ? header : `${header}\n\n${note}`)
+    : `${header}\n\n${content}${note.length === 0 ? '' : ` ${note}`}`
+}
+
+/** Reply routing decision input (per ended relay turn). */
+export interface ReplyPlanInput {
+  readonly reason: TurnEndReasonShape
+  readonly turn: number
+  /** The replier (the relay's target session). */
+  readonly target: TargetLike
+  /** The ended turn's final assistant text ('' for error turns). */
+  readonly assistantText: string
+  /** Chain hop stamped on the delivered relay (the turn's leading message). */
+  readonly sourceHop: number
+  readonly maxHops: number
+}
+
+/** Reply routing decision: deliverable reply payload or silence. */
+export type ReplyPlan =
+  | { readonly kind: 'reply'; readonly body: string; readonly hop: number }
+  | { readonly kind: 'none' }
+
+/**
+ * The whole reply decision: policy (assistant/error/none), content
+ * selection (assistant text vs. error message), and the same hop gate as
+ * delivery — the reply hop is relay hop + 1, and an over-limit chain is
+ * refused silently (returns none; the wiring logs, never throws into the
+ * target's turn — replies are best-effort background routing).
+ * @param input - reason, turn, replier identity, text, and chain/config values.
+ * @returns the reply payload or none.
+ */
+export function planReply(input: ReplyPlanInput): ReplyPlan {
+  const policy = replyPolicy(input.reason)
+  if (policy === 'none') return { kind: 'none' }
+  const hop = nextHop(input.sourceHop, input.maxHops)
+  if (hop === undefined) return { kind: 'none' }
+  const content = policy === 'error'
+    ? (input.reason.error?.message ?? REPLY_ERROR_FALLBACK)
+    : input.assistantText
+  return {
+    kind: 'reply',
+    body: replyBody(input.target.title, input.target.sessionId, input.turn, content, policy === 'assistant' && input.reason.kind === 'max-tokens'),
+    hop,
   }
 }
