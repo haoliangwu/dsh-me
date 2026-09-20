@@ -11,6 +11,7 @@
 | 插件 | id | 作用 |
 |---|---|---|
 | [session-messenger](src/plugins/session-messenger/README.md) | `dsh-session-messenger` | 同 workspace 会话间 agent 互发消息并自动路由回信（主 agent 对等，非 subagent） |
+| [btw](src/plugins/btw/README.md) | `dsh-btw` | `/btw` 顺带一问：子 agent 全 markdown 回答、主日志零污染；`@`/`标题 ::` 可问其他会话的上下文 |
 | [notification](src/plugins/notification/README.md) | `dsh-ui-notification` | 会话完成/出错/提问时（页面后台）发桌面通知 + 双音提示 |
 | [peak-rate](src/plugins/peak-rate/README.md) | `dsh-ui-peak-rate` | 高峰计费时段在输入框尾部显示 🔥 2× 揽钱提醒 |
 | [x-opencode-session-shim](src/plugins/x-opencode-session-shim/README.md) | `dsh-x-opencode-session-shim` | 给 opencode-go 请求补上 `x-opencode-session`，消除 Console Go 的 400 |

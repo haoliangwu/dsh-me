@@ -14,5 +14,7 @@
       name: dsh-me/plugins/notification
     - id: dsh-session-messenger
       name: dsh-me/plugins/session-messenger
+    - id: dsh-btw
+      name: dsh-me/plugins/btw
     - id: dsh-x-opencode-session-shim
       name: dsh-me/plugins/x-opencode-session-shim
