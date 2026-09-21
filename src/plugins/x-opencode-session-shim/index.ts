@@ -51,7 +51,6 @@ export function sessionValueFor(currentInitiator: () => { id: string } | undefin
 /** Install the fetch patch; disposal restores the original fetch. */
 export function apply(ctx: Context): void {
   const agents = ctx.agents
-  const logger = ctx.logger
   const original = globalThis.fetch
   const patched: typeof fetch = (input, init) => {
     const url = requestUrl(input)
@@ -62,9 +61,11 @@ export function apply(ctx: Context): void {
       for (const [key, value] of input.headers) headers.set(key, value)
     }
     headers.set(HEADER_NAME, session)
-    // console over ctx.logger: the host filters info-level plugin logs, but
-    // this line is the ops-visible proof of what we sent to the gateway
-    console.info(`[x-opencode-session-shim] opencode-go: ${HEADER_NAME}: ${session}`)
+    // Opt-in trace (default silent): set DSH_X_OPENCODE_SESSION_SHIM_TRACE=1
+    // to see the header each request actually carried to the gateway.
+    if (process.env.DSH_X_OPENCODE_SESSION_SHIM_TRACE === '1') {
+      console.info(`[x-opencode-session-shim] opencode-go: ${HEADER_NAME}: ${session}`)
+    }
     if (init === undefined && input instanceof Request) {
       return original(new Request(input, { headers }), undefined)
     }
