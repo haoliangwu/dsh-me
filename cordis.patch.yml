@@ -14,6 +14,8 @@
       name: dsh-me/plugins/notification
     - id: dsh-session-messenger
       name: dsh-me/plugins/session-messenger
+    - id: dsh-caveman
+      name: dsh-me/plugins/caveman
     - id: dsh-btw
       name: dsh-me/plugins/btw
     - id: dsh-x-opencode-session-shim

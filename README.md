@@ -4,12 +4,13 @@
 
 - **一把装齐。** 一条 `dsh plugin add` 装完整包，新增成员只需 `pnpm build` 重新构建——不用逐个找 repo。
 - **独立开关。** 每个成员保留自己的 id，profile 层 `cordis.patch.yml` 单独启停、单独传 config。
-- **有测试。** 134 个 vitest 用例守护纯决策核心：寻址与深度闸、回信路由、通知映射、高峰窗口计算。
+- **有测试。** 194 个 vitest 用例守护纯决策核心：寻址与深度闸、回信路由、通知映射、高峰窗口计算、caveman 档位与规则过滤。
 
 ## 插件
 
 | 插件 | id | 作用 |
 |---|---|---|
+| [caveman](src/plugins/caveman/README.md) | `dsh-caveman` | `/caveman` 全局切换极简回复风格：横幅 + 按档过滤的规则集注入 system prompt，主会话与子代理全覆盖 |
 | [session-messenger](src/plugins/session-messenger/README.md) | `dsh-session-messenger` | 同 workspace 会话间 agent 互发消息并自动路由回信（主 agent 对等，非 subagent） |
 | [btw](src/plugins/btw/README.md) | `dsh-btw` | `/btw` 顺带一问：子 agent 全 markdown 回答、主日志零污染；`@`/`标题 ::` 可问其他会话的上下文 |
 | [notification](src/plugins/notification/README.md) | `dsh-ui-notification` | 会话完成/出错/提问时（页面后台）发桌面通知 + 双音提示 |
