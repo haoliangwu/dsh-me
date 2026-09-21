@@ -9,9 +9,10 @@ import type { Context } from '@deepseek-ai/cordis'
 import { apply as applyPeakRate, inject as peakRateInject } from '../plugins/peak-rate/client/index.ts'
 import { apply as applyNotification, inject as notificationInject } from '../plugins/notification/client/index.ts'
 import { apply as applyBtw, inject as btwInject } from '../plugins/btw/client/index.ts'
+import { apply as applyReference, inject as referenceInject } from '../plugins/reference/client/index.ts'
 
 /** Required services: the union of every aggregated client half. */
-export const inject = [...new Set([...peakRateInject, ...notificationInject, ...btwInject])]
+export const inject = [...new Set([...peakRateInject, ...notificationInject, ...btwInject, ...referenceInject])]
 
 /**
  * Apply every aggregated client half against the one merged bundle context.
@@ -21,4 +22,5 @@ export function apply(ctx: Context): void {
   applyPeakRate(ctx)
   applyNotification(ctx)
   applyBtw(ctx)
+  applyReference(ctx)
 }

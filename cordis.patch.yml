@@ -20,3 +20,5 @@
       name: dsh-me/plugins/btw
     - id: dsh-x-opencode-session-shim
       name: dsh-me/plugins/x-opencode-session-shim
+    - id: dsh-reference
+      name: dsh-me/plugins/reference

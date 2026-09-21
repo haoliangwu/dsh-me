@@ -50,6 +50,7 @@ export default defineConfig([
       'plugins/caveman': 'src/plugins/caveman/index.ts',
       'plugins/btw': 'src/plugins/btw/index.ts',
       'plugins/x-opencode-session-shim': 'src/plugins/x-opencode-session-shim/index.ts',
+      'plugins/reference': 'src/plugins/reference/index.ts',
     },
     outDir: 'lib',
     format: ['esm'],

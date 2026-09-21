@@ -1,0 +1,66 @@
+/** `settings.references` namespace dictionaries (dsh-reference settings page + @ menu). */
+
+/** Simplified Chinese dictionary (the key-set source of truth). */
+export const zh = {
+  'nav': '引用',
+  'intro': '管理可挂载到对话的外部目录引用：别名 → 路径。保存后可随时在输入框用 @ 按别名挂载。',
+  'add': '新增引用',
+  'alias': '别名',
+  'path': '路径',
+  'description': '描述',
+  'hidden': '隐藏（不进 @ 菜单）',
+  'save': '保存',
+  'cancel': '取消',
+  'edit': '编辑',
+  'delete': '删除',
+  'confirm': '确认',
+  'close': '关闭',
+  'empty': '还没有引用。新增一条即可在 @ 菜单挂载外部目录。',
+  'loading': '加载中…',
+  'unavailable': '当前连接不可用引用设置。',
+  'warn': '该路径不存在',
+  'aliasPlaceholder': '例如 docs',
+  'pathPlaceholder': '绝对路径或以 ~/ 开头',
+  'descriptionPlaceholder': '这份资料是什么？',
+  'aliasExists': '别名已存在',
+  'addModalTitle': '新增引用',
+  'section.menu': '引用',
+  'type': '类型',
+  'type.local': '本地',
+  'type.git': 'Git（即将支持）',
+  'pickDirectory': '选择目录',
+} satisfies Record<string, string>
+
+/** English dictionary mirroring the Chinese key set. */
+export const en: Record<keyof typeof zh, string> = {
+  'nav': 'References',
+  'intro': 'Manage the external-directory references mountable into conversations: alias → path. Saved entries can be mounted by alias through @ in the composer.',
+  'add': 'Add reference',
+  'alias': 'Alias',
+  'path': 'Path',
+  'description': 'Description',
+  'hidden': 'Hidden (excluded from @ menu)',
+  'save': 'Save',
+  'cancel': 'Cancel',
+  'edit': 'Edit',
+  'delete': 'Delete',
+  'confirm': 'Confirm',
+  'close': 'Close',
+  'empty': 'No references yet. Add one to mount an external directory through @.',
+  'loading': 'Loading…',
+  'unavailable': 'References settings are unavailable on this connection.',
+  'warn': 'This path does not exist',
+  'aliasPlaceholder': 'e.g. docs',
+  'pathPlaceholder': 'Absolute path or ~/ prefix',
+  'descriptionPlaceholder': 'What is this material for?',
+  'aliasExists': 'Alias already exists',
+  'addModalTitle': 'Add reference',
+  'section.menu': 'References',
+  'type': 'Type',
+  'type.local': 'Local',
+  'type.git': 'Git (coming soon)',
+  'pickDirectory': 'Choose folder',
+}
+
+/** The dsh-reference settings-page key union. */
+export type ReferenceKey = keyof typeof zh
