@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { render } from '@testing-library/react'
 import { BtwCommandCard } from './BtwCommandCard.tsx'
 
-const t = (key: string): string => ({ 'copy': 'Copy', 'copied': 'Copied', 'running': 'btw command running…' })[key] ?? key
+const t = (key: string): string => ({ 'copy': 'Copy', 'copied': 'Copied', 'footnotes': 'Footnotes', 'running': 'btw command running…' })[key] ?? key
 
 function node(outcome: unknown) {
   return { kind: 'command', seq: 1, time: 1, commandId: 'c1', name: 'btw', args: null, outcome }
@@ -16,6 +16,13 @@ describe('BtwCommandCard', () => {
     )
     expect(getByText('btw')).toBeDefined()
     expect(getByText('2+2=4')).toBeDefined()
+  })
+
+  it('renders a fenced code block without crashing (labels.code path)', () => {
+    const { container } = render(
+      <BtwCommandCard node={node({ kind: 'success', text: 'answer:\n```ts\nconst x = 1\n```' })} t={t} />,
+    )
+    expect(container.textContent).toContain('const x = 1')
   })
 
   it('shows running summary while unsettled', () => {

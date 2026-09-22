@@ -26,7 +26,10 @@ function leadingFor(state: RowState): ReactNode {
 export function BtwCommandCard({ node, t }: BtwCommandCardProps) {
   const state = stateOf(node.outcome)
   const text = node.outcome?.text
-  const codeLabels = useMemo(() => ({ copyLabel: t('copy'), copiedLabel: t('copied') }), [t])
+  const labels = useMemo(() => ({
+    code: { copyLabel: t('copy'), copiedLabel: t('copied') },
+    footnotes: t('footnotes'),
+  }), [t])
   const summary = node.outcome === null
     ? t('running')
     : text === undefined
@@ -42,7 +45,7 @@ export function BtwCommandCard({ node, t }: BtwCommandCardProps) {
       </div>
       {text !== undefined && (
         <div className={css.body}>
-          <MarkdownText text={text} codeLabels={codeLabels} />
+          <MarkdownText text={text} labels={labels} />
         </div>
       )}
     </div>

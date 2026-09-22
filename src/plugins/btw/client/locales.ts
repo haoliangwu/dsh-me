@@ -7,6 +7,7 @@ export const zh = {
   'failed': 'btw 命令失败',
   'copy': '复制',
   'copied': '已复制',
+  'footnotes': '脚注',
   'title': 'btw',
 } satisfies Record<string, string>
 
@@ -17,6 +18,7 @@ export const en: Record<keyof typeof zh, string> = {
   'failed': 'btw command failed',
   'copy': 'Copy',
   'copied': 'Copied',
+  'footnotes': 'Footnotes',
   'title': 'btw',
 }
 
