@@ -27,7 +27,7 @@ import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client
 import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { InputTriggerServiceContract, InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { ReferenceEntry } from '../pure.ts'
-import { candidateEntries, normalizeTable, resolveReferencePath, serializeMention } from '../pure.ts'
+import { candidateEntries, defaultCacheDir, normalizeTable, resolveEntryPath, serializeMention } from '../pure.ts'
 import { ReferencesSection } from './ReferencesSection.tsx'
 import type { ReferencesSectionInjected } from './ReferencesSection.tsx'
 import { en, zh, type ReferenceKey } from './locales.ts'
@@ -68,6 +68,9 @@ const ENDPOINT_EXISTS = 'exists'
 /** Endpoint under {@link CHANNEL} spawning the host's native folder dialog. */
 const ENDPOINT_PICK_DIRECTORY = 'pickDirectory'
 
+/** Endpoint under {@link CHANNEL} returning the host's resolved git cacheDir + refresh policy. */
+const ENDPOINT_CONFIG = 'config'
+
 /** Host picker answer (mirror of the host's {@link pickDirectoryOnHost} shape). */
 interface PickDirectoryResult {
   readonly canceled: boolean
@@ -94,6 +97,24 @@ export function apply(ctx: ClientContext): void {
   // Resolved once, where `connection` is declared in this plugin's inject; the
   // browser RPC carrier face is not a Context merge in the published types.
   const connection = ctx.get('connection') as ConnectionHandle
+
+  // The host's resolved git cache root, fetched once at startup. Fall back to
+  // the deterministic default while unanswered or on a refused/failed fetch —
+  // the pre-05 behavior (custom cacheDir + default fallback only diverge under
+  // a customized host config, and only until the fetch lands).
+  let hostCacheDir: string | undefined
+  void connection.rpc.call(CHANNEL, ENDPOINT_CONFIG, {}).then((result) => {
+    const settled = result as RpcResult<{ cacheDir?: unknown }>
+    if (!settled.ok) {
+      console.warn('dsh-reference: config fetch refused:', settled.error)
+      return
+    }
+    if (typeof settled.value?.cacheDir === 'string') hostCacheDir = settled.value.cacheDir
+  }).catch((reason: unknown) => {
+    console.warn('dsh-reference: config fetch failed:', reason)
+  })
+  /** The cache root git references resolve through: host value or the default. */
+  const effectiveCacheDir = (home: string): string => hostCacheDir ?? defaultCacheDir(home)
 
   /** Persist one entry; a rename unsets the previous alias first. */
   const saveEntry = async (alias: string, entry: ReferenceEntry, previousAlias?: string): Promise<void> => {
@@ -159,7 +180,7 @@ export function apply(ctx: ClientContext): void {
       if (home === undefined) return []
       const table = scope.getSnapshot().value ?? {}
       const query = req.query.trim().toLowerCase()
-      return candidateEntries(table, home)
+      return candidateEntries(table, home, effectiveCacheDir(home))
         .filter(candidate =>
           candidate.alias.toLowerCase().includes(query)
           || (candidate.description?.toLowerCase().includes(query) ?? false))
@@ -172,13 +193,16 @@ export function apply(ctx: ClientContext): void {
         }))
     },
     // Settle the picked alias into a plain-text mention (US-10): re-read the
-    // snapshot for the freshest path, resolve ~/, and serialize.
+    // snapshot for the freshest entry and resolve its materialized path (local
+    // absolute, git → the host cacheDir fetched at startup, falling back to
+    // the deterministic default while unanswered), then serialize.
     onPick(pick) {
       const home = ctx.remote.$host.home
+      const value = pick.candidate.value
       const table = scope.getSnapshot().value ?? {}
-      const entry = pick.candidate.value === undefined ? undefined : table[pick.candidate.value]
-      if (home === undefined || entry === undefined) return undefined
-      const mention = serializeMention(resolveReferencePath(entry.path, home))
+      const entry = value === undefined ? undefined : table[value]
+      if (home === undefined || value === undefined || entry === undefined) return undefined
+      const mention = serializeMention(resolveEntryPath(value, entry, home, effectiveCacheDir(home)))
       return {
         insert: {
           source: SOURCE_NAME,

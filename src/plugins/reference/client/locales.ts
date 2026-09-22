@@ -28,7 +28,13 @@ export const zh = {
   'section.menu': '引用',
   'type': '类型',
   'type.local': '本地',
-  'type.git': 'Git（即将支持）',
+  'type.git': 'Git 仓库',
+  'repository': '仓库地址',
+  'repositoryPlaceholder': '例如 https://github.com/org/repo.git（不支持 file://）',
+  'branch': '分支（可选）',
+  'branchPlaceholder': '例如 main',
+  'alwaysRefresh': '每次刷新（git fetch + reset --hard）',
+  'alwaysRefreshHint': '开启后每次物化都会 fetch + reset --hard，会摧毁缓存目录里的本地修改。',
   'pickDirectory': '选择目录',
 } satisfies Record<string, string>
 
@@ -60,7 +66,13 @@ export const en: Record<keyof typeof zh, string> = {
   'section.menu': 'References',
   'type': 'Type',
   'type.local': 'Local',
-  'type.git': 'Git (coming soon)',
+  'type.git': 'Git repository',
+  'repository': 'Repository URL',
+  'repositoryPlaceholder': 'e.g. https://github.com/org/repo.git (file:// not supported)',
+  'branch': 'Branch (optional)',
+  'branchPlaceholder': 'e.g. main',
+  'alwaysRefresh': 'Refresh always (git fetch + reset --hard)',
+  'alwaysRefreshHint': 'When on, every materialization fetches and hard-resets, destroying any local changes in the cache directory.',
   'pickDirectory': 'Choose folder',
 }
 

@@ -1,20 +1,24 @@
 /**
  * References settings section: the alias → external-directory reference table
  * (the `dsh-reference` settings namespace) as a CRUD list. Each row shows the
- * alias, path, description, a live @-menu visibility toggle, a ⚠ marker for paths that do
- * not exist on the host, and edit/delete actions; edits happen inline, additions
- * open a modal. Saving validates through the shared pure core (alias/path rules)
- * and probes host existence — a missing directory only warns, never blocks
- * (US-6/US-7). The table snapshot rides the injected settings scope, bound by
- * the renderer as `useSettings`: a host document commit lands in this list
- * without a reload.
+ * alias, identity (local path or git repository URL + branch/refresh markers),
+ * description, a live @-menu visibility toggle, a ⚠ marker for local paths
+ * that do not exist on the host (git entries probe nothing — their cache lands
+ * asynchronously), and edit/delete actions; edits happen inline, additions open
+ * a modal. The type toggle switches the form between the local shape (path +
+ * Choose folder) and the git shape (repository URL + optional branch + the
+ * always-refresh override); saving validates through the shared pure core
+ * (alias/path rules plus the XOR `entryShapeError`) and probes host existence
+ * for local paths — a missing directory only warns, never blocks (US-6/US-7).
+ * The table snapshot rides the injected settings scope, bound by the renderer
+ * as `useSettings`: a host document commit lands in this list without a reload.
  */
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Button, Modal, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { ReferenceEntry, ReferenceTable } from '../pure.ts'
-import { aliasValidationError, referencePathError } from '../pure.ts'
+import { aliasValidationError, branchValidationError, entryShapeError, referencePathError } from '../pure.ts'
 import css from './ReferencesSection.module.css'
 
 /** Registration-side face used by the page. */
@@ -55,16 +59,21 @@ export type ReferencesSectionProps = PropsRuntime<'settings.section'>
   & PropsLocale<'settings.references'>
   & InjectFace<ReferencesSectionInjected>
 
-/** One editable entry draft. */
+/** One editable entry draft: either kind, with both shapes' fields kept. */
 interface Draft {
   alias: string
+  kind: 'local' | 'git'
   path: string
+  repository: string
+  branch: string
   description: string
   hidden: boolean
+  /** Git-only: per-entry refresh override (`always`; default follows the global Config). */
+  alwaysRefresh: boolean
 }
 
 /** Draft validation feedback, keyed by field. */
-type DraftErrors = Partial<Record<'alias' | 'path', string>>
+type DraftErrors = Partial<Record<'alias' | 'path' | 'repository' | 'branch', string>>
 
 /** Which editing surface is open: none, one row in place, or the add modal. */
 type Editing =
@@ -72,12 +81,23 @@ type Editing =
   | { mode: 'row'; alias: string; draft: Draft; errors: DraftErrors }
   | { mode: 'add'; draft: Draft; errors: DraftErrors }
 
-const EMPTY_DRAFT: Draft = { alias: '', path: '', description: '', hidden: false }
+const EMPTY_DRAFT: Draft = {
+  alias: '',
+  kind: 'local',
+  path: '',
+  repository: '',
+  branch: '',
+  description: '',
+  hidden: false,
+  alwaysRefresh: false,
+}
 
 /**
  * Validate a draft against the shared pure core; a legal draft returns an
  * empty error map. The alias-exists collision is a page concern, not a pure
- * rule, so it is evaluated here against the live table.
+ * rule, so it is evaluated here against the live table. Git drafts validate
+ * through the XOR shape rule (`entryShapeError`): the error is attributed to
+ * the field that owns it (branch characters → branch, otherwise → repository).
  * @param draft - the draft to validate.
  * @param alreadyTaken - whether the draft alias collides with another entry.
  * @param t - the page dictionary.
@@ -88,16 +108,41 @@ function draftErrors(draft: Draft, alreadyTaken: boolean, t: ReferencesSectionPr
   const alias = aliasValidationError(draft.alias)
   if (alias !== undefined) errors.alias = alias
   else if (alreadyTaken) errors.alias = t('aliasExists')
-  const path = referencePathError(draft.path)
-  if (path !== undefined) errors.path = path
+  if (draft.kind === 'local') {
+    const path = referencePathError(draft.path)
+    if (path !== undefined) errors.path = path
+  } else {
+    const shape = entryShapeError({
+      repository: draft.repository.trim(),
+      ...(draft.branch.trim() === '' ? {} : { branch: draft.branch.trim() }),
+    })
+    if (shape !== undefined) {
+      if (draft.branch.trim() !== '' && branchValidationError(draft.branch.trim()) !== undefined) {
+        errors.branch = shape
+      } else {
+        errors.repository = shape
+      }
+    }
+  }
   return errors
 }
 
-/** Build the stored entry value from a draft (empty description is omitted). */
+/** Build the stored entry value from a draft (empty optional fields are omitted). */
 function entryOf(draft: Draft): ReferenceEntry {
+  const description = draft.description.trim() === '' ? undefined : draft.description.trim()
+  if (draft.kind === 'git') {
+    const branch = draft.branch.trim()
+    return {
+      repository: draft.repository.trim(),
+      ...(branch === '' ? {} : { branch }),
+      ...(draft.alwaysRefresh ? { refresh: 'always' as const } : {}),
+      ...(description === undefined ? {} : { description }),
+      hidden: draft.hidden,
+    }
+  }
   return {
     path: draft.path.trim(),
-    ...(draft.description.trim() === '' ? {} : { description: draft.description.trim() }),
+    ...(description === undefined ? {} : { description }),
     hidden: draft.hidden,
   }
 }
@@ -121,13 +166,16 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
   }, [snapshot.value])
 
   // Probe each loaded row once after its first appearance; a later save
-  // re-probes that alias and replaces the answer. Component-internal behavior
-  // over injected callbacks only — no external subscription here.
+  // re-probes that alias and replaces the answer. Git entries carry no local
+  // path to probe (their cache lands asynchronously) — skipped (v2 client UI
+  // owns their surface). Component-internal behavior over injected callbacks
+  // only — no external subscription here.
   useEffect(() => {
     if (snapshot.status !== 'ready') return
     let cancelled = false
     for (const { alias, entry } of rows) {
       if (alias in warnings) continue
+      if (entry.path === undefined) continue
       void probePath(entry.path).then((exists) => {
         if (cancelled) return
         setWarnings(prev => (prev[alias] === exists ? prev : { ...prev, [alias]: exists }))
@@ -143,14 +191,16 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
       ? draft.alias in table
       : previousAlias !== draft.alias && draft.alias in table
     const errors = draftErrors(draft, alreadyTaken, t)
-    if (errors.alias !== undefined || errors.path !== undefined) {
+    if (errors.alias !== undefined || errors.path !== undefined || errors.repository !== undefined || errors.branch !== undefined) {
       setEditing(previousAlias === undefined
         ? { mode: 'add', draft, errors }
         : { mode: 'row', alias: previousAlias, draft, errors })
       return
     }
     const entry = entryOf(draft)
-    const exists = await probePath(draft.path)
+    // Local drafts probe host existence for the ⚠ marker; git drafts skip the
+    // probe (their cache materializes asynchronously) and record no warning.
+    const exists = draft.kind === 'local' ? await probePath(draft.path) : undefined
     try {
       await saveEntry(draft.alias, entry, previousAlias)
     } catch (reason) {
@@ -160,7 +210,7 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
     setWarnings(prev => {
       const next = { ...prev }
       if (previousAlias !== undefined && previousAlias !== draft.alias) delete next[previousAlias]
-      next[draft.alias] = exists
+      if (exists !== undefined) next[draft.alias] = exists
       return next
     })
     setConfirmingDelete(null)
@@ -188,10 +238,20 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
   }
 
   const openEdit = (alias: string, entry: ReferenceEntry): void => {
+    const git = entry.repository !== undefined
     setEditing({
       mode: 'row',
       alias,
-      draft: { alias, path: entry.path, description: entry.description ?? '', hidden: entry.hidden },
+      draft: {
+        alias,
+        kind: git ? 'git' : 'local',
+        path: entry.path ?? '',
+        repository: entry.repository ?? '',
+        branch: entry.branch ?? '',
+        description: entry.description ?? '',
+        hidden: entry.hidden,
+        alwaysRefresh: entry.refresh === 'always',
+      },
       errors: {},
     })
   }
@@ -207,7 +267,7 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
     }
   }
 
-  /** The shared field form: type toggle, alias/path/description inputs, @-menu visibility toggle, errors. */
+  /** The shared field form: type toggle, shape fields per kind, @-menu visibility, git refresh override, errors. */
   const renderForm = (
     draft: Draft,
     errors: DraftErrors,
@@ -215,14 +275,23 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
   ): ReactNode => (
     <div className={css.form}>
       <div className={css.typeRow} role="group" aria-label={t('type')}>
-        <label className={css.typeOption} data-selected>
-          <input type="radio" name="reference-kind" checked readOnly />
+        <label className={css.typeOption} data-selected={draft.kind === 'local'}>
+          <input
+            type="radio"
+            name="reference-kind"
+            checked={draft.kind === 'local'}
+            onChange={() => { onChange({ ...draft, kind: 'local' }) }}
+          />
           <span>{t('type.local')}</span>
         </label>
-        <label className={css.typeOption} data-disabled title={t('type.git')}>
-          <input type="radio" name="reference-kind" disabled />
+        <label className={css.typeOption} data-selected={draft.kind === 'git'}>
+          <input
+            type="radio"
+            name="reference-kind"
+            checked={draft.kind === 'git'}
+            onChange={() => { onChange({ ...draft, kind: 'git' }) }}
+          />
           <span>{t('type.git')}</span>
-          <span className={css.versionTag}>v2</span>
         </label>
       </div>
       <label className={css.field}>
@@ -236,28 +305,55 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
         />
         {errors.alias !== undefined && <span className={css.error}>{errors.alias}</span>}
       </label>
-      <label className={css.field}>
-        <span>{t('path')}</span>
-        <div className={css.pathRow}>
-          <input
-            className={css.pathInput}
-            value={draft.path}
-            placeholder={t('pathPlaceholder')}
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(event) => { onChange({ ...draft, path: event.currentTarget.value }) }}
-          />
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={pickingPath}
-            onClick={() => { void pickPath(draft, onChange) }}
-          >
-            {t('pickDirectory')}
-          </Button>
-        </div>
-        {errors.path !== undefined && <span className={css.error}>{errors.path}</span>}
-      </label>
+      {draft.kind === 'local' ? (
+        <label className={css.field}>
+          <span>{t('path')}</span>
+          <div className={css.pathRow}>
+            <input
+              className={css.pathInput}
+              value={draft.path}
+              placeholder={t('pathPlaceholder')}
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(event) => { onChange({ ...draft, path: event.currentTarget.value }) }}
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={pickingPath}
+              onClick={() => { void pickPath(draft, onChange) }}
+            >
+              {t('pickDirectory')}
+            </Button>
+          </div>
+          {errors.path !== undefined && <span className={css.error}>{errors.path}</span>}
+        </label>
+      ) : (
+        <>
+          <label className={css.field}>
+            <span>{t('repository')}</span>
+            <input
+              value={draft.repository}
+              placeholder={t('repositoryPlaceholder')}
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(event) => { onChange({ ...draft, repository: event.currentTarget.value }) }}
+            />
+            {errors.repository !== undefined && <span className={css.error}>{errors.repository}</span>}
+          </label>
+          <label className={css.field}>
+            <span>{t('branch')}</span>
+            <input
+              value={draft.branch}
+              placeholder={t('branchPlaceholder')}
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(event) => { onChange({ ...draft, branch: event.currentTarget.value }) }}
+            />
+            {errors.branch !== undefined && <span className={css.error}>{errors.branch}</span>}
+          </label>
+        </>
+      )}
       <label className={css.field}>
         <span>{t('description')}</span>
         <input
@@ -275,6 +371,16 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
         onChange={(next) => { onChange({ ...draft, hidden: !next }) }}
       />
       <p className={css.formHint}>{t('menuVisibleHint')}</p>
+      {draft.kind === 'git' && (
+        <>
+          <Switch
+            label={t('alwaysRefresh')}
+            checked={draft.alwaysRefresh}
+            onChange={(next) => { onChange({ ...draft, alwaysRefresh: next }) }}
+          />
+          <p className={css.formHint}>{t('alwaysRefreshHint')}</p>
+        </>
+      )}
     </div>
   )
 
@@ -295,7 +401,17 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
             <div className={css.rowMain}>
               <div className={css.rowIdentity}>
                 <span className={css.rowAlias}>{alias}</span>
-                <span className={css.rowPath}>{entry.path}</span>
+                {entry.repository !== undefined ? (
+                  <span className={css.rowPath}>{entry.repository}</span>
+                ) : (
+                  <span className={css.rowPath}>{entry.path}</span>
+                )}
+                {(entry.branch !== undefined || entry.refresh === 'always') && (
+                  <span className={css.rowDesc}>
+                    {entry.branch !== undefined ? `branch: ${entry.branch}` : ''}
+                    {entry.refresh === 'always' ? (entry.branch !== undefined ? ' · ' : '') + t('alwaysRefresh') : ''}
+                  </span>
+                )}
                 {entry.description !== undefined && <span className={css.rowDesc}>{entry.description}</span>}
               </div>
               <div className={css.rowControls}>

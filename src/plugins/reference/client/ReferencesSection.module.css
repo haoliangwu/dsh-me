@@ -139,19 +139,6 @@
   margin: 0;
 }
 
-.typeOption[data-disabled] {
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.versionTag {
-  padding: 1px 4px;
-  border: 0.5px solid var(--dsw-alias-border-l3);
-  border-radius: 4px;
-  font-size: 10px;
-  line-height: 14px;
-  color: var(--dsw-alias-label-tertiary);
-}
-
 .pathRow {
   display: flex;
   gap: 8px;
