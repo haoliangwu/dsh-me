@@ -26,7 +26,8 @@
  */
 import { homedir } from 'node:os'
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, stat, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
