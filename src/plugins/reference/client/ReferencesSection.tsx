@@ -2,7 +2,8 @@
  * References settings section: the alias → external-directory reference table
  * (the `dsh-reference` settings namespace) as a CRUD list. Each row shows the
  * alias, identity (local path or git repository URL + branch/refresh markers),
- * description, a live @-menu visibility toggle, a ⚠ marker for local paths
+ * description, an auto-include toggle (system-prompt advertisement; off keeps
+ * the entry @-mountable), a ⚠ marker for local paths
  * that do not exist on the host (git entries probe nothing — their cache lands
  * asynchronously), and edit/delete actions; edits happen inline, additions open
  * a modal. The type toggle switches the form between the local shape (path +
@@ -67,7 +68,8 @@ interface Draft {
   repository: string
   branch: string
   description: string
-  hidden: boolean
+  /** System-prompt advertisement (default on). Off = the entry stays @-mountable but the agent is not told. */
+  autoInclude: boolean
   /** Git-only: per-entry refresh override (`always`; default follows the global Config). */
   alwaysRefresh: boolean
 }
@@ -88,7 +90,7 @@ const EMPTY_DRAFT: Draft = {
   repository: '',
   branch: '',
   description: '',
-  hidden: false,
+  autoInclude: true,
   alwaysRefresh: false,
 }
 
@@ -137,13 +139,13 @@ function entryOf(draft: Draft): ReferenceEntry {
       ...(branch === '' ? {} : { branch }),
       ...(draft.alwaysRefresh ? { refresh: 'always' as const } : {}),
       ...(description === undefined ? {} : { description }),
-      hidden: draft.hidden,
+      autoInclude: draft.autoInclude,
     }
   }
   return {
     path: draft.path.trim(),
     ...(description === undefined ? {} : { description }),
-    hidden: draft.hidden,
+    autoInclude: draft.autoInclude,
   }
 }
 
@@ -217,10 +219,10 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
     setEditing({ mode: 'idle' })
   }
 
-  /** Persist the row's @-menu visibility toggle without leaving the list. */
-  const toggleHidden = (alias: string, entry: ReferenceEntry): void => {
-    void saveEntry(alias, { ...entry, hidden: !entry.hidden }).catch((reason: unknown) => {
-      console.warn('dsh-reference: hidden toggle rejected:', reason)
+  /** Persist the row's auto-include toggle without leaving the list. */
+  const toggleAutoInclude = (alias: string, entry: ReferenceEntry): void => {
+    void saveEntry(alias, { ...entry, autoInclude: !entry.autoInclude }).catch((reason: unknown) => {
+      console.warn('dsh-reference: auto-include toggle rejected:', reason)
     })
   }
 
@@ -249,7 +251,7 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
         repository: entry.repository ?? '',
         branch: entry.branch ?? '',
         description: entry.description ?? '',
-        hidden: entry.hidden,
+        autoInclude: entry.autoInclude,
         alwaysRefresh: entry.refresh === 'always',
       },
       errors: {},
@@ -267,7 +269,7 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
     }
   }
 
-  /** The shared field form: type toggle, shape fields per kind, @-menu visibility, git refresh override, errors. */
+  /** The shared field form: type toggle, shape fields per kind, auto-include, git refresh override, errors. */
   const renderForm = (
     draft: Draft,
     errors: DraftErrors,
@@ -365,12 +367,12 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
         />
       </label>
       <Switch
-        label={t('menuVisible')}
-        checked={!draft.hidden}
-        title={t('menuVisibleHint')}
-        onChange={(next) => { onChange({ ...draft, hidden: !next }) }}
+        label={t('autoInclude')}
+        checked={draft.autoInclude}
+        title={t('autoIncludeHint')}
+        onChange={(next) => { onChange({ ...draft, autoInclude: next }) }}
       />
-      <p className={css.formHint}>{t('menuVisibleHint')}</p>
+      <p className={css.formHint}>{t('autoIncludeHint')}</p>
       {draft.kind === 'git' && (
         <>
           <Switch
@@ -419,10 +421,10 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
                   <span className={css.warn} role="img" aria-label={t('warn')} title={t('warn')}>⚠ {t('warn')}</span>
                 )}
                 <Switch
-                  label={t('menuVisible')}
-                  checked={!entry.hidden}
-                  title={t('menuVisibleHint')}
-                  onChange={() => { toggleHidden(alias, entry) }}
+                  label={t('autoInclude')}
+                  checked={entry.autoInclude}
+                  title={t('autoIncludeHint')}
+                  onChange={() => { toggleAutoInclude(alias, entry) }}
                 />
               </div>
             </div>

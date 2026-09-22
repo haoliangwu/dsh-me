@@ -2,17 +2,21 @@
  * dsh-reference, node half.
  *
  * A named reference table (alias → external directory path + description +
- * visibility, or a git repository + optional branch/refresh) stored in the
+ * auto-include, or a git repository + optional branch/refresh) stored in the
  * global `dsh-reference` settings namespace — every profile shares one table,
  * persisted to settings.yaml by the settings service. The host half registers
  * the namespace schema (validation shared with the pure core: alias/path
  * rules plus the `{ path }` XOR `{ repository, branch? }` shape) and mounts a
  * dynamic `systemPrompt` section (`dsh-reference:rules`, order 10400, after
- * the persona suffix) that re-reads the table at every assembly: every entry
- * is advertised with its resolved materialized path (git: `<cacheDir>/<alias>`)
- * plus its description when present, in an `<available_references>` block so
- * the agent knows when to consult the material — hidden only skips the
- * @-menu, never the advertisement (OC semantics). Git entries are materialized
+ * the persona suffix) that re-reads the table at every assembly: every
+ * auto-include entry is advertised with its resolved materialized path (git:
+ * `<cacheDir>/<alias>`) plus its description when present, in an
+ * `<available_references>` block so the agent knows when to consult the
+ * material. autoInclude defaults true; setting it false keeps the entry in
+ * the @-menu (manual mount works) but out of the advertisement — the agent
+ * is not told (semantic inversion of the legacy `hidden`, which the schema
+ * tolerates on read and the pure-core normalize migrates). Git entries are
+ * materialized
  * in the background at apply AND after every settings-table mutation (the
  * settings scope watch re-runs materialization, so a git entry saved through
  * the settings page clones without a reload; re-runs are idempotent by the
@@ -84,7 +88,7 @@ const entryShape = z.object({
   branch: z.string(),
   refresh: refreshModeShape,
   description: z.string(),
-  hidden: z.boolean(),
+  autoInclude: z.boolean(),
 })
 
 const tableShape = z.dict(entryShape)

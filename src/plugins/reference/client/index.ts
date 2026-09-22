@@ -5,8 +5,9 @@
  * `dsh-reference` settings scope: the page subscribes through its injected
  * hook (host document commits land in the list without a reload), while the
  * trigger source re-reads the same snapshot at every menu open — settings
- * edits are visible in `@` immediately. Hidden entries are clipped by the
- * shared pure core; saving validates through the same alias/path rules; the
+ * edits are visible in `@` immediately. Every entry is a candidate (no
+ * clipping: autoInclude only gates the advertisement); saving validates
+ * through the same alias/path rules; the
  * mention serialization is the shared `serializeMention` (space-containing
  * paths take the quoted form). Export discipline: packages/client/AGENTS.md.
  */
@@ -173,8 +174,9 @@ export function apply(ctx: ClientContext): void {
     // label, so the source-title row is suppressed.
     order: 10,
     showGroupTitle: false,
-    // Candidates read the live settings snapshot at every menu open; hidden
-    // references are clipped by the shared pure core (US-8/US-9).
+    // Candidates read the live settings snapshot at every menu open; every
+    // entry qualifies — autoInclude only gates the advertisement, never the
+    // @-menu (US-8/US-9).
     async candidates(_session, req) {
       const home = ctx.remote.$host.home
       if (home === undefined) return []

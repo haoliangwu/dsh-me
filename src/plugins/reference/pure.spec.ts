@@ -100,29 +100,44 @@ describe('normalizeTable', () => {
     expect(normalizeTable('nope')).toEqual({})
   })
 
-  it('defaults hidden to false', () => {
+  it('defaults autoInclude to true', () => {
     expect(normalizeTable({ docs: { path: '/Users/u/docs' } })).toEqual({
-      docs: { path: '/Users/u/docs', hidden: false },
+      docs: { path: '/Users/u/docs', autoInclude: true },
     })
   })
 
-  it('preserves an explicit hidden flag', () => {
+  it('migrates the legacy hidden field: hidden:true → autoInclude:false, hidden:false → autoInclude:true', () => {
     expect(normalizeTable({ docs: { path: '/Users/u/docs', hidden: true } })).toEqual({
-      docs: { path: '/Users/u/docs', hidden: true },
+      docs: { path: '/Users/u/docs', autoInclude: false },
+    })
+    expect(normalizeTable({ docs: { path: '/Users/u/docs', hidden: false } })).toEqual({
+      docs: { path: '/Users/u/docs', autoInclude: true },
+    })
+  })
+
+  it('preserves an explicit autoInclude flag and lets it win over the legacy hidden field', () => {
+    expect(normalizeTable({ docs: { path: '/Users/u/docs', autoInclude: false } })).toEqual({
+      docs: { path: '/Users/u/docs', autoInclude: false },
+    })
+    expect(normalizeTable({ docs: { path: '/Users/u/docs', autoInclude: true, hidden: true } })).toEqual({
+      docs: { path: '/Users/u/docs', autoInclude: true },
+    })
+    expect(normalizeTable({ docs: { path: '/Users/u/docs', autoInclude: false, hidden: false } })).toEqual({
+      docs: { path: '/Users/u/docs', autoInclude: false },
     })
   })
 
   it('keeps a non-empty description and drops an empty one', () => {
     expect(normalizeTable({ docs: { path: '/x', description: '产品文档库' } })).toEqual({
-      docs: { path: '/x', description: '产品文档库', hidden: false },
+      docs: { path: '/x', description: '产品文档库', autoInclude: true },
     })
     expect(normalizeTable({ docs: { path: '/x', description: '' } })).toEqual({
-      docs: { path: '/x', hidden: false },
+      docs: { path: '/x', autoInclude: true },
     })
   })
 
   it('skips a non-object entry and an entry without a string path', () => {
-    expect(normalizeTable({ docs: '/plain-string', bad: { hidden: true } })).toEqual({})
+    expect(normalizeTable({ docs: '/plain-string', bad: { autoInclude: false } })).toEqual({})
   })
 })
 
@@ -132,7 +147,7 @@ describe('buildAdvertisementText', () => {
   })
 
   it('advertises an entry without a description (name/path only, no <description>)', () => {
-    const table = { docs: { path: '/Users/u/docs', description: undefined, hidden: false } }
+    const table = { docs: { path: '/Users/u/docs', description: undefined, autoInclude: true } }
     expect(buildAdvertisementText(table, HOME)).toBe(
       'Project references provide additional directories that can be accessed when relevant.\n'
       + '<available_references>\n'
@@ -144,27 +159,19 @@ describe('buildAdvertisementText', () => {
     )
   })
 
-  it('advertises hidden entries that carry a description (OC semantics)', () => {
+  it('excludes autoInclude:false entries (manual-@-only references are not advertised)', () => {
     const table = {
-      quiet: { path: '/Users/u/rare', description: '低频资料', hidden: true },
+      quiet: { path: '/Users/u/rare', description: '低频资料', autoInclude: false },
     }
-    expect(buildAdvertisementText(table, HOME)).toBe(
-      'Project references provide additional directories that can be accessed when relevant.\n'
-      + '<available_references>\n'
-      + '  <reference>\n'
-      + '    <name>quiet</name>\n'
-      + '    <path>/Users/u/rare</path>\n'
-      + '    <description>低频资料</description>\n'
-      + '  </reference>\n'
-      + '</available_references>',
-    )
+    expect(buildAdvertisementText(table, HOME)).toBe('')
   })
 
-  it('lists entries with the resolved path, sorts by alias, omits <description> for description-less ones', () => {
+  it('advertises only the auto-include entries, sorting by alias, omitting <description> for description-less ones', () => {
     const table = {
-      zeta: { path: '/Users/u/z', description: 'Z 资料', hidden: false },
-      noshow: { path: '/Users/u/n', description: undefined, hidden: false },
-      alpha: { path: '~/a', description: 'A 资料', hidden: false },
+      zeta: { path: '/Users/u/z', description: 'Z 资料', autoInclude: true },
+      noshow: { path: '/Users/u/n', description: undefined, autoInclude: true },
+      alpha: { path: '~/a', description: 'A 资料', autoInclude: true },
+      quiet: { path: '/Users/u/q', description: 'Q', autoInclude: false },
     }
     expect(buildAdvertisementText(table, HOME)).toBe(
       'Project references provide additional directories that can be accessed when relevant.\n'
@@ -193,18 +200,21 @@ describe('candidateEntries', () => {
     expect(candidateEntries({}, HOME)).toEqual([])
   })
 
-  it('drops hidden entries', () => {
+  it('includes every entry — autoInclude:false still candidates (manual-@-only)', () => {
     const table = {
-      keep: { path: '/Users/u/k', description: 'K', hidden: false },
-      quiet: { path: '/Users/u/q', description: 'Q', hidden: true },
+      keep: { path: '/Users/u/k', description: 'K', autoInclude: true },
+      quiet: { path: '/Users/u/q', description: 'Q', autoInclude: false },
     }
-    expect(candidateEntries(table, HOME)).toEqual([{ alias: 'keep', path: '/Users/u/k', description: 'K' }])
+    expect(candidateEntries(table, HOME)).toEqual([
+      { alias: 'keep', path: '/Users/u/k', description: 'K' },
+      { alias: 'quiet', path: '/Users/u/q', description: 'Q' },
+    ])
   })
 
   it('resolves ~/ paths and sorts by alias', () => {
     const table = {
-      b: { path: '~/b', hidden: false },
-      a: { path: '/Users/u/a', description: 'A', hidden: false },
+      b: { path: '~/b', autoInclude: true },
+      a: { path: '/Users/u/a', description: 'A', autoInclude: true },
     }
     expect(candidateEntries(table, HOME)).toEqual([
       { alias: 'a', path: '/Users/u/a', description: 'A' },
@@ -375,36 +385,41 @@ describe('joinPath / dirnameOf (no Node builtins)', () => {
 
 describe('resolveEntryPath', () => {
   it('resolves a local entry through the path rules', () => {
-    expect(resolveEntryPath('docs', { path: '~/docs', hidden: false }, HOME, '/cache')).toBe('/Users/u/docs')
-    expect(resolveEntryPath('docs', { path: '/abs/docs', hidden: false }, HOME, '/cache')).toBe('/abs/docs')
+    expect(resolveEntryPath('docs', { path: '~/docs', autoInclude: true }, HOME, '/cache')).toBe('/Users/u/docs')
+    expect(resolveEntryPath('docs', { path: '/abs/docs', autoInclude: true }, HOME, '/cache')).toBe('/abs/docs')
   })
 
   it('resolves a git entry to <cacheDir>/<alias>', () => {
-    expect(resolveEntryPath('repo', { repository: 'https://x/y.git', hidden: false }, HOME, '/cache')).toBe('/cache/repo')
-    expect(resolveEntryPath('repo', { repository: 'https://x/y.git', hidden: false }, HOME, defaultCacheDir(HOME)))
+    expect(resolveEntryPath('repo', { repository: 'https://x/y.git', autoInclude: true }, HOME, '/cache')).toBe('/cache/repo')
+    expect(resolveEntryPath('repo', { repository: 'https://x/y.git', autoInclude: true }, HOME, defaultCacheDir(HOME)))
       .toBe('/Users/u/.cache/dsh-me/references/repo')
   })
 })
 
 describe('normalizeTable git entries', () => {
-  it('keeps a git entry with branch, refresh, description, and hidden', () => {
+  it('keeps a git entry with branch, refresh, description, and autoInclude; migrates legacy hidden', () => {
     expect(normalizeTable({
-      repo: { repository: 'https://x/y.git', branch: 'main', refresh: 'always', description: 'Y 仓库', hidden: true },
+      repo: { repository: 'https://x/y.git', branch: 'main', refresh: 'always', description: 'Y 仓库', autoInclude: true },
     })).toEqual({
-      repo: { repository: 'https://x/y.git', branch: 'main', refresh: 'always', description: 'Y 仓库', hidden: true },
+      repo: { repository: 'https://x/y.git', branch: 'main', refresh: 'always', description: 'Y 仓库', autoInclude: true },
+    })
+    expect(normalizeTable({
+      repo: { repository: 'https://x/y.git', hidden: true },
+    })).toEqual({
+      repo: { repository: 'https://x/y.git', autoInclude: false },
     })
   })
 
   it('keeps a bare git entry (no branch/refresh)', () => {
     expect(normalizeTable({ repo: { repository: 'https://x/y.git' } })).toEqual({
-      repo: { repository: 'https://x/y.git', hidden: false },
+      repo: { repository: 'https://x/y.git', autoInclude: true },
     })
   })
 
   it('drops a file:// git entry and an entry with neither form', () => {
     expect(normalizeTable({
       bad: { repository: 'file:///tmp/r' },
-      neither: { hidden: true },
+      neither: { autoInclude: true },
     })).toEqual({})
   })
 
@@ -416,8 +431,8 @@ describe('normalizeTable git entries', () => {
 describe('gitSpecsOf', () => {
   it('flattens git entries with deterministic cache paths and the global default refresh', () => {
     const table = {
-      local: { path: '/x', hidden: false },
-      repo: { repository: 'https://x/y.git', branch: 'main', hidden: false },
+      local: { path: '/x', autoInclude: true },
+      repo: { repository: 'https://x/y.git', branch: 'main', autoInclude: true },
     }
     expect(gitSpecsOf(table, HOME, '/cache')).toEqual([
       { name: 'repo', repository: 'https://x/y.git', branch: 'main', path: '/cache/repo', refresh: 'missing-only' },
@@ -426,8 +441,8 @@ describe('gitSpecsOf', () => {
 
   it('per-entry refresh overrides the global value', () => {
     const table = {
-      a: { repository: 'https://a.git', refresh: 'always' as const, hidden: false },
-      b: { repository: 'https://b.git', refresh: 'missing-only' as const, hidden: false },
+      a: { repository: 'https://a.git', refresh: 'always' as const, autoInclude: true },
+      b: { repository: 'https://b.git', refresh: 'missing-only' as const, autoInclude: true },
     }
     expect(gitSpecsOf(table, HOME, '/cache', 'always')).toEqual([
       { name: 'a', repository: 'https://a.git', path: '/cache/a', refresh: 'always' },
@@ -437,14 +452,14 @@ describe('gitSpecsOf', () => {
 
   it('yields no specs for an empty table or local-only entries', () => {
     expect(gitSpecsOf({}, HOME, '/cache')).toEqual([])
-    expect(gitSpecsOf({ docs: { path: '/x', hidden: false } }, HOME, '/cache')).toEqual([])
+    expect(gitSpecsOf({ docs: { path: '/x', autoInclude: true } }, HOME, '/cache')).toEqual([])
   })
 })
 
 describe('buildAdvertisementText git entries', () => {
   it('advertises a git entry at its cache path (resolved, not the repository URL)', () => {
     const table = {
-      repo: { repository: 'https://x/y.git', description: 'Y 仓库', hidden: false },
+      repo: { repository: 'https://x/y.git', description: 'Y 仓库', autoInclude: true },
     }
     expect(buildAdvertisementText(table, HOME, '/cache')).toBe(
       'Project references provide additional directories that can be accessed when relevant.\n'
@@ -460,14 +475,15 @@ describe('buildAdvertisementText git entries', () => {
 })
 
 describe('candidateEntries git entries', () => {
-  it('offers git candidates at their cache path, mixed and sorted with local ones', () => {
+  it('offers ALL git candidates at their cache path — autoInclude:false included, mixed and sorted with local ones', () => {
     const table = {
-      zeta: { repository: 'https://z.git', hidden: false },
-      alpha: { path: '/Users/u/a', description: 'A', hidden: false },
-      quiet: { repository: 'https://q.git', hidden: true },
+      zeta: { repository: 'https://z.git', autoInclude: false },
+      alpha: { path: '/Users/u/a', description: 'A', autoInclude: true },
+      quiet: { repository: 'https://q.git', autoInclude: false },
     }
     expect(candidateEntries(table, HOME, '/cache')).toEqual([
       { alias: 'alpha', path: '/Users/u/a', description: 'A' },
+      { alias: 'quiet', path: '/cache/quiet' },
       { alias: 'zeta', path: '/cache/zeta' },
     ])
   })

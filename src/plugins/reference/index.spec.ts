@@ -22,18 +22,22 @@ describe('reference-table schema (settings namespace)', () => {
     expect(Schema(undefined)).toEqual({})
   })
 
-  it('accepts a legal local entry (path + optional description/hidden)', () => {
+  it('accepts a legal local entry (path + optional description/autoInclude)', () => {
     expect(Schema({ docs: { path: '/Users/u/docs' } })).toEqual({ docs: { path: '/Users/u/docs' } })
-    expect(Schema({ docs: { path: '~/docs', description: '产品文档库', hidden: true } })).toEqual({
-      docs: { path: '~/docs', description: '产品文档库', hidden: true },
+    expect(Schema({ docs: { path: '~/docs', description: '产品文档库', autoInclude: true } })).toEqual({
+      docs: { path: '~/docs', description: '产品文档库', autoInclude: true },
     })
   })
 
   it('accepts a legal git entry (repository + optional branch/refresh)', () => {
     expect(Schema({ repo: { repository: 'https://x/y.git' } })).toEqual({ repo: { repository: 'https://x/y.git' } })
-    expect(Schema({ repo: { repository: 'https://x/y.git', branch: 'main', refresh: 'always', description: 'Y', hidden: true } })).toEqual({
-      repo: { repository: 'https://x/y.git', branch: 'main', refresh: 'always', description: 'Y', hidden: true },
+    expect(Schema({ repo: { repository: 'https://x/y.git', branch: 'main', refresh: 'always', description: 'Y', autoInclude: true } })).toEqual({
+      repo: { repository: 'https://x/y.git', branch: 'main', refresh: 'always', description: 'Y', autoInclude: true },
     })
+  })
+
+  it('tolerates the legacy hidden field on read (migration is the pure-core normalize\'s job)', () => {
+    expect(Schema({ docs: { path: '/x', hidden: true } })).toEqual({ docs: { path: '/x', hidden: true } })
   })
 
   it('rejects an invalid alias', () => {
@@ -73,7 +77,7 @@ describe('reference-table schema (settings namespace)', () => {
     expect(() => Schema({ docs: { path: '/x', description: 7 } })).toThrow(/expected string/)
   })
 
-  it('rejects a non-boolean hidden', () => {
-    expect(() => Schema({ docs: { path: '/x', hidden: 'yes' } })).toThrow(/expected boolean/)
+  it('rejects a non-boolean autoInclude', () => {
+    expect(() => Schema({ docs: { path: '/x', autoInclude: 'yes' } })).toThrow(/expected boolean/)
   })
 })

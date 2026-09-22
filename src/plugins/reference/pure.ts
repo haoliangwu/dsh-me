@@ -1,12 +1,13 @@
 /**
  * dsh-reference pure decision core: alias/path validation, settings-table
- * normalization (hidden defaults to false, git entries keep repository +
- * branch + refresh), advertisement-section text assembly, @-menu candidate
- * filtering, mention serialization, and the git materialization command
- * sequence. Zero I/O and zero Node builtins — home/cacheDir are injected and
- * every path op is plain string handling (POSIX joins), so the browser bundle
- * can import every symbol without a Node polyfill (the client sandbox has no
- * node:path).
+ * normalization (autoInclude defaults to true; the legacy `hidden` field
+ * migrates — `hidden: true` → `autoInclude: false`, anything else → true; git
+ * entries keep repository + branch + refresh), advertisement-section text
+ * assembly, @-menu candidate listing, mention serialization, and the git
+ * materialization command sequence. Zero I/O and zero Node builtins —
+ * home/cacheDir are injected and every path op is plain string handling
+ * (POSIX joins), so the browser bundle can import every symbol without a Node
+ * polyfill (the client sandbox has no node:path).
  */
 
 /** Git refresh policy: `always` fetches + hard-resets; `missing-only` (default) clones only when the cache dir is absent. */
@@ -23,7 +24,8 @@ export interface ReferenceEntry {
   /** Git form: per-entry refresh override; falls back to the global Config value. */
   readonly refresh?: RefreshMode
   readonly description?: string
-  readonly hidden: boolean
+  /** Auto-include in the system-prompt advertisement (default true). Off = manual @ only — the agent is not told. */
+  readonly autoInclude: boolean
 }
 
 /** The normalized alias → entry table (the settings namespace value shape). */
@@ -234,8 +236,11 @@ export function resolveEntryPath(alias: string, entry: ReferenceEntry, home: str
 }
 
 /**
- * Normalize a raw settings-table value: hidden defaults to false, an
- * empty/absent description becomes undefined, git entries keep repository +
+ * Normalize a raw settings-table value: autoInclude defaults to true (the
+ * legacy `hidden` field migrates — `hidden: true` → `autoInclude: false`,
+ * since an old hidden user explicitly opted out of auto-inclusion; `hidden:
+ * false`/absent → `autoInclude: true`; an explicit autoInclude always wins),
+ * an empty/absent description becomes undefined, git entries keep repository +
  * optional branch/refresh, and non-object entries or entries matching neither
  * legal form (or a `file://` repository) are dropped defensively (the schema
  * layer rejects those shapes at write time; this keeps downstream readers
@@ -254,19 +259,24 @@ export function normalizeTable(raw: unknown): ReferenceTable {
       branch?: unknown
       refresh?: unknown
       description?: unknown
+      autoInclude?: unknown
       hidden?: unknown
     }
     const description = typeof shape.description === 'string' && shape.description !== '' ? shape.description : undefined
-    const hidden = shape.hidden === true
+    // Legacy `hidden` migrates: old hidden:true users explicitly did NOT want
+    // automatic agent disclosure, so it flips to autoInclude:false. Everything
+    // else defaults to true (auto-include on). An explicit autoInclude beats
+    // the legacy field when both exist.
+    const autoInclude = typeof shape.autoInclude === 'boolean' ? shape.autoInclude : shape.hidden !== true
     if (typeof shape.path === 'string') {
-      table[alias] = { path: shape.path, ...(description === undefined ? {} : { description }), hidden }
+      table[alias] = { path: shape.path, ...(description === undefined ? {} : { description }), autoInclude }
     } else if (typeof shape.repository === 'string' && shape.repository !== '' && !isFileRepository(shape.repository)) {
       table[alias] = {
         repository: shape.repository,
         ...(typeof shape.branch === 'string' && shape.branch !== '' ? { branch: shape.branch } : {}),
         ...(shape.refresh === 'always' ? { refresh: 'always' as const } : {}),
         ...(description === undefined ? {} : { description }),
-        hidden,
+        autoInclude,
       }
     }
   }
@@ -275,11 +285,12 @@ export function normalizeTable(raw: unknown): ReferenceTable {
 
 /**
  * Assemble the advertisement-section text in the `<available_references>` XML
- * shape (the archived legacy plugin's verified format): every entry (hidden
- * entries included — hidden only governs @-menu visibility, aligning with OC
- * semantics), one `<reference>` per entry in alias order, with the resolved
- * materialized path (git: `<cacheDir>/<alias>`). A missing description simply
- * omits the `<description>` element; only a fully empty table yields '' so the
+ * shape (the archived legacy plugin's verified format): every auto-include
+ * entry (autoInclude: false entries stay manual-@-only — the agent is not
+ * told about them), one `<reference>` per entry in alias order, with the
+ * resolved materialized path (git: `<cacheDir>/<alias>`). A missing
+ * description simply omits the `<description>` element; only a fully empty
+ * table — or one whose every entry is autoInclude: false — yields '' so the
  * renderer drops the section.
  * @param table - the normalized reference table.
  * @param home - the user's home directory (`~/` expansion).
@@ -287,7 +298,9 @@ export function normalizeTable(raw: unknown): ReferenceTable {
  * @returns the section text, or '' for an empty table.
  */
 export function buildAdvertisementText(table: ReferenceTable, home: string, cacheDir: string = defaultCacheDir(home)): string {
-  const entries = Object.entries(table).sort(([a], [b]) => compareAliases(a, b))
+  const entries = Object.entries(table)
+    .filter(([, entry]) => entry.autoInclude !== false)
+    .sort(([a], [b]) => compareAliases(a, b))
   if (entries.length === 0) return ''
   const lines = [
     'Project references provide additional directories that can be accessed when relevant.',
@@ -302,7 +315,7 @@ export function buildAdvertisementText(table: ReferenceTable, home: string, cach
   return lines.join('\n')
 }
 
-/** One @-menu candidate: a visible reference with its resolved path. */
+/** One @-menu candidate: a reference entry with its resolved path. */
 export interface ReferenceCandidate {
   readonly alias: string
   readonly path: string
@@ -310,17 +323,17 @@ export interface ReferenceCandidate {
 }
 
 /**
- * Filter and resolve the @-menu candidates: hidden entries are dropped, the
- * rest resolve their materialized path (git: `<cacheDir>/<alias>`) and sort
- * by alias (spec US-8/US-9).
+ * List and resolve the @-menu candidates: every entry qualifies (@ 提及总是
+ * 可用 — autoInclude only gates the system-prompt advertisement, never the
+ * menu), each resolves its materialized path (git: `<cacheDir>/<alias>`) and
+ * the list sorts by alias (spec US-8/US-9).
  * @param table - the normalized reference table.
  * @param home - the user's home directory (`~/` expansion).
  * @param cacheDir - the git cache root (default: `~/.cache/dsh-me/references`).
- * @returns the visible candidates in alias order.
+ * @returns the candidates in alias order.
  */
 export function candidateEntries(table: ReferenceTable, home: string, cacheDir: string = defaultCacheDir(home)): ReferenceCandidate[] {
   return Object.entries(table)
-    .filter(([, entry]) => !entry.hidden)
     .sort(([a], [b]) => compareAliases(a, b))
     .map(([alias, entry]) => ({
       alias,
