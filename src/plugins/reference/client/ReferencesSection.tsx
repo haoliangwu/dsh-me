@@ -1,7 +1,7 @@
 /**
  * References settings section: the alias → external-directory reference table
  * (the `dsh-reference` settings namespace) as a CRUD list. Each row shows the
- * alias, path, description, a live hidden toggle, a ⚠ marker for paths that do
+ * alias, path, description, a live @-menu visibility toggle, a ⚠ marker for paths that do
  * not exist on the host, and edit/delete actions; edits happen inline, additions
  * open a modal. Saving validates through the shared pure core (alias/path rules)
  * and probes host existence — a missing directory only warns, never blocks
@@ -167,7 +167,7 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
     setEditing({ mode: 'idle' })
   }
 
-  /** Persist the row's hidden toggle without leaving the list. */
+  /** Persist the row's @-menu visibility toggle without leaving the list. */
   const toggleHidden = (alias: string, entry: ReferenceEntry): void => {
     void saveEntry(alias, { ...entry, hidden: !entry.hidden }).catch((reason: unknown) => {
       console.warn('dsh-reference: hidden toggle rejected:', reason)
@@ -207,7 +207,7 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
     }
   }
 
-  /** The shared field form: type toggle, alias/path/description inputs, hidden toggle, errors. */
+  /** The shared field form: type toggle, alias/path/description inputs, @-menu visibility toggle, errors. */
   const renderForm = (
     draft: Draft,
     errors: DraftErrors,
@@ -269,10 +269,12 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
         />
       </label>
       <Switch
-        label={t('hidden')}
-        checked={draft.hidden}
-        onChange={(next) => { onChange({ ...draft, hidden: next }) }}
+        label={t('menuVisible')}
+        checked={!draft.hidden}
+        title={t('menuVisibleHint')}
+        onChange={(next) => { onChange({ ...draft, hidden: !next }) }}
       />
+      <p className={css.formHint}>{t('menuVisibleHint')}</p>
     </div>
   )
 
@@ -301,8 +303,9 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
                   <span className={css.warn} role="img" aria-label={t('warn')} title={t('warn')}>⚠ {t('warn')}</span>
                 )}
                 <Switch
-                  label={t('hidden')}
-                  checked={entry.hidden}
+                  label={t('menuVisible')}
+                  checked={!entry.hidden}
+                  title={t('menuVisibleHint')}
                   onChange={() => { toggleHidden(alias, entry) }}
                 />
               </div>

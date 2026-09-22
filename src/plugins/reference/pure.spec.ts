@@ -120,8 +120,17 @@ describe('buildAdvertisementText', () => {
     expect(buildAdvertisementText({}, HOME)).toBe('')
   })
 
-  it('returns an empty string when nothing has a description', () => {
-    expect(buildAdvertisementText({ a: { path: '/x', description: undefined, hidden: false } }, HOME)).toBe('')
+  it('advertises an entry without a description (name/path only, no <description>)', () => {
+    const table = { docs: { path: '/Users/u/docs', description: undefined, hidden: false } }
+    expect(buildAdvertisementText(table, HOME)).toBe(
+      'Project references provide additional directories that can be accessed when relevant.\n'
+      + '<available_references>\n'
+      + '  <reference>\n'
+      + '    <name>docs</name>\n'
+      + '    <path>/Users/u/docs</path>\n'
+      + '  </reference>\n'
+      + '</available_references>',
+    )
   })
 
   it('advertises hidden entries that carry a description (OC semantics)', () => {
@@ -129,18 +138,41 @@ describe('buildAdvertisementText', () => {
       quiet: { path: '/Users/u/rare', description: '低频资料', hidden: true },
     }
     expect(buildAdvertisementText(table, HOME)).toBe(
-      'Available external references:\n- quiet: /Users/u/rare — 低频资料',
+      'Project references provide additional directories that can be accessed when relevant.\n'
+      + '<available_references>\n'
+      + '  <reference>\n'
+      + '    <name>quiet</name>\n'
+      + '    <path>/Users/u/rare</path>\n'
+      + '    <description>低频资料</description>\n'
+      + '  </reference>\n'
+      + '</available_references>',
     )
   })
 
-  it('lists described entries with the resolved path, sorted by alias, skipping description-less ones', () => {
+  it('lists entries with the resolved path, sorts by alias, omits <description> for description-less ones', () => {
     const table = {
       zeta: { path: '/Users/u/z', description: 'Z 资料', hidden: false },
       noshow: { path: '/Users/u/n', description: undefined, hidden: false },
       alpha: { path: '~/a', description: 'A 资料', hidden: false },
     }
     expect(buildAdvertisementText(table, HOME)).toBe(
-      'Available external references:\n- alpha: /Users/u/a — A 资料\n- zeta: /Users/u/z — Z 资料',
+      'Project references provide additional directories that can be accessed when relevant.\n'
+      + '<available_references>\n'
+      + '  <reference>\n'
+      + '    <name>alpha</name>\n'
+      + '    <path>/Users/u/a</path>\n'
+      + '    <description>A 资料</description>\n'
+      + '  </reference>\n'
+      + '  <reference>\n'
+      + '    <name>noshow</name>\n'
+      + '    <path>/Users/u/n</path>\n'
+      + '  </reference>\n'
+      + '  <reference>\n'
+      + '    <name>zeta</name>\n'
+      + '    <path>/Users/u/z</path>\n'
+      + '    <description>Z 资料</description>\n'
+      + '  </reference>\n'
+      + '</available_references>',
     )
   })
 })

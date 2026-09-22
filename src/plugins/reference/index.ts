@@ -7,9 +7,10 @@
  * service. The host half registers the namespace schema (validation shared
  * with the pure core) and mounts a dynamic `systemPrompt` section
  * (`dsh-reference:rules`, order 10400, after the persona suffix) that
- * re-reads the table at every assembly: entries with a description are
- * advertised with their resolved path so the agent knows when to consult
- * the material — hidden only skips the @-menu, never the advertisement (OC
+ * re-reads the table at every assembly: every entry is advertised with its
+ * resolved path (plus its description when present) in an
+ * `<available_references>` block so the agent knows when to consult the
+ * material — hidden only skips the @-menu, never the advertisement (OC
  * semantics). A webServer RPC channel (`/dsh-reference`, endpoint `exists`)
  * answers the browser's path-existence probe for the settings page's
  * non-blocking ⚠ warning. The UI lives in the client half

@@ -75,22 +75,31 @@ export function normalizeTable(raw: unknown): ReferenceTable {
 }
 
 /**
- * Assemble the advertisement-section text: every entry with a description
- * (hidden entries included — hidden only governs @-menu visibility, aligning
- * with OC semantics), one line per entry in alias order, with the resolved
- * absolute path. Entries without a description never appear; an empty result
- * is an empty string so the renderer drops the section.
+ * Assemble the advertisement-section text in the `<available_references>` XML
+ * shape (the archived legacy plugin's verified format): every entry (hidden
+ * entries included — hidden only governs @-menu visibility, aligning with OC
+ * semantics), one `<reference>` per entry in alias order, with the resolved
+ * absolute path. A missing description simply omits the `<description>`
+ * element; only a fully empty table yields '' so the renderer drops the
+ * section.
  * @param table - the normalized reference table.
  * @param home - the user's home directory (`~/` expansion).
- * @returns the section text, or '' when nothing is advertised.
+ * @returns the section text, or '' for an empty table.
  */
 export function buildAdvertisementText(table: ReferenceTable, home: string): string {
-  const lines = Object.entries(table)
-    .filter(([, entry]) => entry.description !== undefined)
-    .sort(([a], [b]) => compareAliases(a, b))
-    .map(([alias, entry]) => `- ${alias}: ${resolveReferencePath(entry.path, home)} — ${entry.description}`)
-  if (lines.length === 0) return ''
-  return `Available external references:\n${lines.join('\n')}`
+  const entries = Object.entries(table).sort(([a], [b]) => compareAliases(a, b))
+  if (entries.length === 0) return ''
+  const lines = [
+    'Project references provide additional directories that can be accessed when relevant.',
+    '<available_references>',
+  ]
+  for (const [alias, entry] of entries) {
+    lines.push('  <reference>', `    <name>${alias}</name>`, `    <path>${resolveReferencePath(entry.path, home)}</path>`)
+    if (entry.description !== undefined) lines.push(`    <description>${entry.description}</description>`)
+    lines.push('  </reference>')
+  }
+  lines.push('</available_references>')
+  return lines.join('\n')
 }
 
 /** One @-menu candidate: a visible reference with its resolved path. */

@@ -191,6 +191,13 @@
   color: var(--dsw-alias-state-error-label);
 }
 
+.formHint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
 .formActions {
   display: inline-flex;
   justify-content: flex-end;

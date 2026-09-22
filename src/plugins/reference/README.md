@@ -1,6 +1,6 @@
 # dsh-reference
 
-把 [OpenCode references](https://opencode.ai/v2/docs/references/) 的能力带进 dsh：命名的引用表（alias → 外部目录 + 描述 + 可见性），设置页可视化管理，@ 菜单按别名挂载，带描述的引用自动广告进系统提示 — agent 知道有哪些资料、在哪、何时该查。dsh 读操作本无路径边界，无需任何权限机制。
+把 [OpenCode references](https://opencode.ai/v2/docs/references/) 的能力带进 dsh：命名的引用表（alias → 外部目录 + 描述 + 可见性），设置页可视化管理，@ 菜单按别名挂载，引用自动广告进系统提示（`<available_references>` XML 块）— agent 知道有哪些资料、在哪、何时该查。dsh 读操作本无路径边界，无需任何权限机制。
 
 ## 事实
 
@@ -11,18 +11,24 @@
 
 ## 使用
 
-设置页左侧导航 **References**：新增（alias + path + description + hidden 开关）、行内编辑、两步确认删除。path 支持绝对路径与 `~/` 开头，相对路径拒绝；指向不存在目录可保存但行内标 ⚠。path 输入框旁的「Choose folder」弹**系统原生**目录选择框（macOS osascript / Linux zenity→kdialog / Windows PowerShell FolderBrowserDialog），返回真实绝对路径。
+设置页左侧导航 **References**：新增（alias + path + description + @ 菜单可见性开关）、行内编辑、两步确认删除。path 支持绝对路径与 `~/` 开头，相对路径拒绝；指向不存在目录可保存但行内标 ⚠。path 输入框旁的「Choose folder」弹**系统原生**目录选择框（macOS osascript / Linux zenity→kdialog / Windows PowerShell FolderBrowserDialog），返回真实绝对路径。
 
 输入框打 @ 可看到引用候选（alias + 描述），选中落纯文本 `@<绝对路径>` 提及（含空格路径自动引号形态），agent 用读工具自行访问。
 
-带 description 的引用出现在每个回合系统提示的尾段：
+每个引用都出现在每个回合系统提示的尾段（`<available_references>` XML 块，归档旧插件验证过的格式）：
 
 ```
-Available external references:
-- docs: /Users/u/product-docs — 产品行为与术语
+Project references provide additional directories that can be accessed when relevant.
+<available_references>
+  <reference>
+    <name>docs</name>
+    <path>/Users/u/product-docs</path>
+    <description>产品行为与术语</description>
+  </reference>
+</available_references>
 ```
 
-无 description 的引用不广告（仍可手动挂载）；hidden 只把引用藏出 @ 菜单，**不**裁剪广告（OC 对齐语义）。
+无 description 的引用仍广告（只列 name/path，省略 `<description>` 元素）；空表不注入任何内容。hidden 只把引用藏出 @ 菜单，**不**裁剪广告（OC 对齐语义）。设置页里该开关以正向语义呈现为「@ 菜单」：打开 = 出现在 @ 提及菜单，关闭 = 不再出现，广告始终不受影响。
 
 ## 机制
 
