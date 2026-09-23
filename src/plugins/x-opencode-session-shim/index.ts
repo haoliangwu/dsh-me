@@ -50,12 +50,11 @@ export function sessionValueFor(currentInitiator: () => { id: string } | undefin
 
 /** Install the fetch patch; disposal restores the original fetch. */
 export function apply(ctx: Context): void {
-  const agents = ctx.agents
   const original = globalThis.fetch
   const patched: typeof fetch = (input, init) => {
     const url = requestUrl(input)
     if (url === undefined || !url.startsWith(OPENCODE_GO_ORIGIN)) return original(input, init)
-    const session = sessionValueFor(() => agents.currentInitiator())
+    const session = sessionValueFor(() => ctx.agents.currentInitiator())
     const headers = new Headers(init?.headers)
     if (init === undefined && input instanceof Request) {
       for (const [key, value] of input.headers) headers.set(key, value)
@@ -74,7 +73,7 @@ export function apply(ctx: Context): void {
   globalThis.fetch = patched
   // cordis ctx.effect runs the callback immediately and treats its RETURN
   // value as the disposer — restore must be returned, not run inline.
-  ctx.effect((): (() => void) => () => {
+  ctx.effect(() => () => {
     globalThis.fetch = original
   }, 'x-opencode-session-shim: restore globalThis.fetch')
 }
