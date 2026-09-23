@@ -79,8 +79,7 @@ export function apply(ctx: Context, config: Config): void {
       kind: 'prefix',
       path: CHANNEL,
       handler: (req, res) => {
-        void serveChannel(req, res, CHANNEL, (endpoint, payload) => {
-          void payload
+        void serveChannel(req, res, CHANNEL, (endpoint) => {
           if (endpoint === ENDPOINT_CONFIG) {
             return Promise.resolve({ ok: true as const, value: response })
           }
@@ -140,7 +139,7 @@ async function serveChannel(
   const message = (body ?? {}) as { type?: unknown; rpcId?: unknown; method?: unknown; payload?: unknown }
   const respond = (result: RpcResult<unknown>): void =>
     writeJson(200, { type: 'server-response', rpcId: typeof message.rpcId === 'string' ? message.rpcId : '', result })
-  if (typeof body !== 'object' || body === null || message.type !== 'client-request'
+  if (message.type !== 'client-request'
     || typeof message.rpcId !== 'string' || typeof message.method !== 'string') {
     respond({ ok: false, error: { code: 'gateway/bad-request', message: 'invalid client-request message', details: {} } })
     return

@@ -130,6 +130,13 @@ export function questionBody(items: readonly { question?: string }[]): string {
     .join(' / ')
 }
 
+/** Title marker per trigger type (spec: 事件类型 + 会话名). */
+const TRIGGER_MARKERS: Record<TriggerKind, string> = {
+  completion: '完成',
+  error: '错误',
+  question: '提问',
+}
+
 /**
  * Notification title: type marker + session name (spec).
  * @param kind - the trigger type.
@@ -137,8 +144,7 @@ export function questionBody(items: readonly { question?: string }[]): string {
  * @returns the title.
  */
 export function titleFor(kind: TriggerKind, sessionName: string): string {
-  const marker = kind === 'completion' ? '完成' : kind === 'error' ? '错误' : '提问'
-  return `[dsh] ${marker}：${sessionName}`
+  return `[dsh] ${TRIGGER_MARKERS[kind]}：${sessionName}`
 }
 
 /** Notification emitter injected by the apply half. */
