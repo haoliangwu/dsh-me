@@ -16,8 +16,10 @@ dsh web UI 的键盘快捷键插件：监听 document keydown，把安全键位�
 `CmdOrCtrl` 平台中立：macOS 上等同 `⌘`，Windows/Linux 上等同 `Ctrl`。帮助浮层
 内显示当前平台符号（macOS 显示 ⌘，其余显示 Ctrl）。
 
-> **聚焦 composer 动作（`/`）可用性**：当运行中的 dsh runtime 提供
-> `SessionInput.focus()` 时生效（0.1.6+）；旧 runtime 上按键只记一条 warning
+> **聚焦 composer 动作（`/`）可用性**：优先走 `SessionInput.focus()`（runtime
+> 0.1.6+，恢复上次光标位置）；旧 runtime（如锁定的 0.1.5-rc.2）回退到直接聚焦
+> 当前挂载的 composer 可编辑区（Lexical 编辑宿主 `[data-lexical-editor="true"]`，
+> undo RowHider 同款 client 层定点 DOM 访问先例）；两条路都不通才记一条 warning
 > 且不做任何事（不崩溃）。`/` 是单键（文本类）绑定——编辑框聚焦时按键保持普通
 > 输入（composer 内打字不抢键，spec US-5），从正文/历史聚焦时触发快捷键。
 

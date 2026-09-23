@@ -118,22 +118,31 @@ export function apply(ctx: ClientContext): void {
   const openStore = makeStore(false)
   const bindingsStore = makeStore<Readonly<Partial<Record<ActionId, string>>>>({})
 
-  // Composer-focus degradation: pinned 0.1.5-rc.2's SessionInput has no
-  // focus(); the running runtime does (0.1.6-alpha.2) but older ones must not
-  // crash. Missing focus()/conversation/input logs ONE warning per page, then
-  // stays silent so repeated presses do not spam the console (US-5).
+  // Composer-focus path: the pinned 0.1.5-rc.2 runtime has no
+  // SessionInput.focus() (0.1.6+ adds it), so the service path is primary and
+  // a DOM fallback covers older runtimes: Lexical marks its editable host with
+  // data-lexical-editor="true" (lexical 0.49, verified in the rc.2 bundle),
+  // and the mounted editable IS the current session's composer. Targeted DOM
+  // access in the client half follows the undo RowHider precedent. When both
+  // paths fail, log ONE warning per page so repeated presses do not spam.
   let focusUnavailableWarned = false
   const warnFocusUnavailable = (): void => {
     if (focusUnavailableWarned) return
     focusUnavailableWarned = true
-    logger.warn('dsh-ui-shortcuts: focus action unavailable — the running dsh runtime predates SessionInput.focus()')
+    logger.warn('dsh-ui-shortcuts: focus action unavailable — the running dsh runtime predates SessionInput.focus() and no composer editable is mounted')
+  }
+  const focusComposerDom = (): boolean => {
+    const editable = document.querySelector<HTMLElement>('[data-lexical-editor="true"][contenteditable="true"]')
+    if (editable === null) return false
+    editable.focus()
+    return true
   }
   const focusComposer = (): void => {
     const sessionKey = scoped.uiSession.adapter.current.getSnapshot().key
     if (sessionKey === undefined) return // no session selected — nothing to focus
     const binding = scoped.sessions.binding(sessionKey)
     if (binding === undefined) {
-      warnFocusUnavailable()
+      if (!focusComposerDom()) warnFocusUnavailable()
       return
     }
     const conversation = binding.ctx.get('conversation') as
@@ -144,7 +153,7 @@ export function apply(ctx: ClientContext): void {
       facade.focus()
       return
     }
-    warnFocusUnavailable()
+    if (!focusComposerDom()) warnFocusUnavailable()
   }
 
   // The engine owns every DOM touch in this plugin: listeners, guards, and

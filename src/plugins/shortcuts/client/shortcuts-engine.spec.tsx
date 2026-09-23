@@ -322,17 +322,35 @@ describe('apply', () => {
     }
   })
 
-  it('focus: runtime without SessionInput.focus() — no crash, ONE warning across repeated presses', async () => {
+  it('focus: runtime without SessionInput.focus() and no editable mounted — no crash, ONE warning across repeated presses', async () => {
     const { fiber, focusSpy, bench, warns } = await fullBench(DEFAULTS, 'mac')
     bench.focusFor = () => ({}) // 0.1.5-era facade: no focus()
     try {
       keydown({ key: '/' })
       expect(focusSpy).not.toHaveBeenCalled()
       expect(warns).toHaveLength(1)
-      expect(warns[0]).toEqual(['dsh-ui-shortcuts: focus action unavailable — the running dsh runtime predates SessionInput.focus()'])
+      expect(warns[0]).toEqual(['dsh-ui-shortcuts: focus action unavailable — the running dsh runtime predates SessionInput.focus() and no composer editable is mounted'])
       keydown({ key: '/' })
       expect(warns).toHaveLength(1)
     } finally {
+      await fiber.dispose()
+    }
+  })
+
+  it('focus: DOM fallback — a mounted composer editable receives focus when the facade lacks focus()', async () => {
+    const { fiber, focusSpy, bench, warns } = await fullBench(DEFAULTS, 'mac')
+    bench.focusFor = () => ({}) // 0.1.5-era facade: no focus()
+    const editable = document.createElement('div')
+    editable.setAttribute('data-lexical-editor', 'true')
+    editable.setAttribute('contenteditable', 'true')
+    document.body.appendChild(editable)
+    try {
+      keydown({ key: '/' })
+      expect(focusSpy).not.toHaveBeenCalled()
+      expect(document.activeElement).toBe(editable)
+      expect(warns).toHaveLength(0)
+    } finally {
+      editable.remove()
       await fiber.dispose()
     }
   })
