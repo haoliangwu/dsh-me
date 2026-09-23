@@ -51,6 +51,7 @@ export default defineConfig([
       'plugins/btw': 'src/plugins/btw/index.ts',
       'plugins/x-opencode-session-shim': 'src/plugins/x-opencode-session-shim/index.ts',
       'plugins/reference': 'src/plugins/reference/index.ts',
+      'plugins/undo': 'src/plugins/undo/index.ts',
     },
     outDir: 'lib',
     format: ['esm'],

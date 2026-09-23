@@ -22,3 +22,5 @@
       name: dsh-me/plugins/x-opencode-session-shim
     - id: dsh-reference
       name: dsh-me/plugins/reference
+    - id: dsh-undo
+      name: dsh-me/plugins/undo

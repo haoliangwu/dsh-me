@@ -6,12 +6,13 @@
   "exports": {
     ".": "./lib/index.js",
     "./plugins/peak-rate": "./lib/plugins/peak-rate.js",
-"./plugins/notification": "./lib/plugins/notification.js",
+    "./plugins/notification": "./lib/plugins/notification.js",
     "./plugins/session-messenger": "./lib/plugins/session-messenger.js",
     "./plugins/caveman": "./lib/plugins/caveman.js",
     "./plugins/btw": "./lib/plugins/btw.js",
     "./plugins/x-opencode-session-shim": "./lib/plugins/x-opencode-session-shim.js",
     "./plugins/reference": "./lib/plugins/reference.js",
+    "./plugins/undo": "./lib/plugins/undo.js",
     "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
@@ -24,9 +25,11 @@
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-store",
+        "@deepseek-ai/dsh-client-ui-chat",
         "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-model-selection",
         "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots",
         "@deepseek-ai/dsh-client-ui-input-trigger"
       ],
       "platform": "web"
@@ -48,30 +51,32 @@
     "cordis.patch.yml"
   ],
   "devDependencies": {
-    "tsdown": "^0.12.0",
-    "lightningcss": "^1.29.0",
-    "typescript": "^5.7.0",
-    "@types/react": "~18.3.1",
-    "react": "^18.2.0",
-    "@deepseek-ai/schemastery": "^3.18.0",
-    "vitest": "^4.1.8",
     "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-api-remotes": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-connection": "0.1.5-rc.2",
     "@deepseek-ai/dsh-client-locale": "0.1.5-rc.2",
     "@deepseek-ai/dsh-client-store": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-ui-chat": "0.1.5-rc.2",
     "@deepseek-ai/dsh-client-ui-conversation": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-ui-input-trigger": "0.1.5-rc.2",
     "@deepseek-ai/dsh-client-ui-model-selection": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-ui-slots": "0.1.5-rc.2",
     "@deepseek-ai/dsh-client-ui-primitives": "0.1.5-rc.2",
     "@deepseek-ai/dsh-client-ui-renderer": "0.1.5-rc.2",
     "@deepseek-ai/dsh-client-ui-settings": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-ui-input-trigger": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-connection": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-api-remotes": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-tools": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.5-rc.2",
     "@deepseek-ai/dsh-host-apiproxy": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-invariants": "0.1.5-rc.2",
     "@deepseek-ai/dsh-host-webserver": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-invariants": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-session-format-v2-to-v3": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-tools": "0.1.5-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.0",
     "@testing-library/react": "^16.0.0",
-    "jsdom": "^25.0.0"
+    "@types/react": "~18.3.1",
+    "jsdom": "^25.0.0",
+    "lightningcss": "^1.29.0",
+    "react": "^18.2.0",
+    "tsdown": "^0.12.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.8"
   }
 }
