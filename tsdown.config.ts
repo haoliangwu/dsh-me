@@ -52,6 +52,7 @@ export default defineConfig([
       'plugins/x-opencode-session-shim': 'src/plugins/x-opencode-session-shim/index.ts',
       'plugins/reference': 'src/plugins/reference/index.ts',
       'plugins/undo': 'src/plugins/undo/index.ts',
+      'plugins/shortcuts': 'src/plugins/shortcuts/index.ts',
     },
     outDir: 'lib',
     format: ['esm'],

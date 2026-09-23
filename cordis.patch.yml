@@ -24,3 +24,5 @@
       name: dsh-me/plugins/reference
     - id: dsh-undo
       name: dsh-me/plugins/undo
+    - id: dsh-ui-shortcuts
+      name: dsh-me/plugins/shortcuts

@@ -16,6 +16,13 @@ Domain glossary for dsh-me. Terms resolve here; implementation details stay in s
 - **错误**: agent 回合以失败告终（`turn/end`，error，携带 LlmFailure）。
 - **静默策略**: 页面可见时不打扰 — 仅在页面隐藏/失焦时弹通知。
 
+## 快捷键域（shortcuts）
+
+- **绑定（binding）**: 触发动作的键组合，平台中立写法（如 `CmdOrCtrl+B`）。部署者可经 profile 层配置改。避免叫： 热键、快捷键组合。
+- **动作（action）**: 绑定触发的操作（如 收/展侧边栏）。动作跨包只经注入的 Cordis 服务，不走 DOM 操作。
+- **守卫（guard）**: 决定一次按键是否到达绑定的焦点与输入法判定 — 单键绑定在可编辑元素持焦点时跳过，修饰键组合照常，输入法组字期间一律抑制。避免叫： 过滤器。
+- **保留组合（reserved combo）**: 浏览器或操作系统在页面可见之前就消费掉的键组合（如 `Cmd/Ctrl+W`）。部署者选绑定时避开；本插件不做 denylist 校验。
+
 ## 会话通信域（session-messenger）
 
 - **会话通信**: 同 workspace 内一个会话的 agent 通过工具把消息投递给另一会话，目标以主 agent 身份开回合处理的机制。非 subagent。
