@@ -398,14 +398,17 @@ describe('pure: redo replay plan (§2.2)', () => {
       || userCopy.type !== 'user/message' || assistantCopy.type !== 'assistant/message') {
       throw new Error('copy steps missing')
     }
-    // Fresh id + plugin marker on the user copy; content carried verbatim.
-    // (The step union carries a wide data type; narrow the payload per case.)
+    // Fresh id + ORIGINAL source on the user copy (kind stays 'user' — the
+    // chat renders a user bubble and the persistence audit forbids extra
+    // members on kind:'user' sources, §2.3 amendment); content carried
+    // verbatim. (The step union carries a wide data type; narrow the payload
+    // per case.)
     const userData = userCopy.data as SessionEventMap['user/message']
     const assistantData = assistantCopy.data as SessionEventMap['assistant/message']
     expect(userData.role).toBe('user')
     expect(userData.id).not.toBe(ids[0]?.userMessageId)
     expect(userData.content).toEqual([{ type: 'text', text: 'question 1' }])
-    expect(userData.source).toEqual({ kind: 'plugin', plugin: UNDO_PLUGIN })
+    expect(userData.source).toEqual({ kind: 'user' })
     // Assistant copy: fake turn, usage dropped, provider/model source retained.
     expect(assistantData.turn).toBe(FAKE_TURN_BASE + 1)
     expect(assistantData.usage).toBeUndefined()

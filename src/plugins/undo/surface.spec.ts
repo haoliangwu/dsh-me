@@ -33,6 +33,7 @@ import {
   buildRedoAppendPlan,
   buildTombstoneAppend,
   findLastUndoTombstone,
+  isReplayedUserMessage,
   isUndoTombstone,
   lastStepOfTurn,
   shadowedTurnNodes,
@@ -207,8 +208,8 @@ function messageIdOf(event: SessionEvent): string {
 }
 
 /** Whether one message event is a dsh-undo redo copy (identification rule, §2.3). */
-function isCopyEvent(event: SessionEvent): boolean {
-  if (event.type === 'user/message') return event.data.source.kind === 'plugin'
+function isCopyEvent(events: readonly SessionEvent[], event: SessionEvent): boolean {
+  if (event.type === 'user/message') return isReplayedUserMessage(events, event)
   if (event.type === 'assistant/message' || event.type === 'tool/result') return event.data.turn >= FAKE_TURN_BASE
   return false
 }
@@ -295,11 +296,34 @@ describe('dsh-undo spike: redo wire isomorphism (§2.2–2.3)', () => {
     )
     appendTombstone(session, [...session.surface.nodes], 1)
     redoLastTurn(session)
-    const copyIds = session.snapshotEvents()
-      .filter(event => (event.type === 'user/message' || event.type === 'assistant/message' || event.type === 'tool/result') && isCopyEvent(event))
+    const events = session.snapshotEvents()
+    const copyIds = events
+      .filter(event => (event.type === 'user/message' || event.type === 'assistant/message' || event.type === 'tool/result') && isCopyEvent(events, event))
       .map(messageIdOf)
     expect(copyIds.length).toBeGreaterThan(0)
     for (const id of copyIds) expect(originalIds.has(id)).toBe(false)
+  })
+
+  it('replays the user copy with the ORIGINAL kind:\'user\' source (user bubble + persistence audit, §2.3 amendment)', () => {
+    const { session, userMessageId } = buildSession('spike-user-source-1')
+    appendTombstone(session, [...session.surface.nodes], 1)
+    redoLastTurn(session)
+
+    const events = session.snapshotEvents()
+    const userCopy = events.find((event): event is SessionEvent<'user/message'> =>
+      event.type === 'user/message' && event.data.id !== userMessageId)
+    if (userCopy === undefined) throw new Error('no replayed user copy')
+    // Fresh id + cloned ORIGINAL source: kind stays 'user' so the chat
+    // renders a user bubble, and the persistence audit forbids extra members
+    // on kind:'user' sources — no plugin marker may ride here.
+    expect(userCopy.data.id).not.toBe(userMessageId)
+    expect(userCopy.data.source).toEqual({ kind: 'user' })
+    // Fake-turn attribution recognizes the copy and rejects the original.
+    expect(isReplayedUserMessage(events, userCopy)).toBe(true)
+    const original = events.find((event): event is SessionEvent<'user/message'> =>
+      event.type === 'user/message' && event.data.id === userMessageId)
+    if (original === undefined) throw new Error('no original user message')
+    expect(isReplayedUserMessage(events, original)).toBe(false)
   })
 
   it('undo→redo→undo converges to the same wire every round, one dormant tombstone per round', () => {

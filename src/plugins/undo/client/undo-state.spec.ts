@@ -62,7 +62,7 @@ function tombstone(seq: number, turn: number, shadowed: number[]): SessionEventL
   })
 }
 
-/** A plugin-copied user message (the redo marker source). */
+/** A LEGACY plugin-copied user message (the retired redo marker source). */
 function copyUser(seq: number, id: string, text: string): SessionEventLikeEntryShape {
   return entry({
     seq, type: 'user/message', surfaceOp: 'append',
@@ -162,6 +162,81 @@ describe('deriveUndoState', () => {
     ]
     const state = deriveUndoState(log)
     expect(state.undoneTurns.size).toBe(0)
+  })
+
+  it('attributes a NEW-style redo copy (kind:\'user\' source under a fake turn) and refills after undo-of-redo', () => {
+    const log = [
+      ...twoTurnLog(),
+      tombstone(11, 2, [6, 7, 8, 9]),
+      entry({ seq: 12, type: 'turn/start', data: { turn: 1_000_002 } }),
+      user(13, 0, 'u2-copy', 'second'),
+      assistant(14, 1_000_002, 0, 'a2-copy'),
+      turnEnd(15, 1_000_002),
+      tombstone(16, 1_000_002, [13, 14]),
+    ]
+    const state = deriveUndoState(log)
+    // The copy's kind:'user' source lands under the fake turn: the composer
+    // refill key and the undone-copy facts both carry the text.
+    expect(state.userTextByTurn.get(1_000_002)).toBe('second')
+    const facts = state.undoneTurns.get(1_000_002)
+    expect(facts?.userMessageId).toBe('u2-copy')
+    expect(facts?.userText).toBe('second')
+  })
+
+  it('accepts a LEGACY plugin-copied user message under a fake turn for attribution and refill', () => {
+    const log = [
+      ...twoTurnLog(),
+      tombstone(11, 2, [6, 7, 8, 9]),
+      entry({ seq: 12, type: 'turn/start', data: { turn: 1_000_002 } }),
+      copyUser(13, 'u2-copy', 'second'),
+      assistant(14, 1_000_002, 0, 'a2-copy'),
+      turnEnd(15, 1_000_002),
+      tombstone(16, 1_000_002, [13, 14]),
+    ]
+    const state = deriveUndoState(log)
+    expect(state.userTextByTurn.get(1_000_002)).toBe('second')
+    const facts = state.undoneTurns.get(1_000_002)
+    expect(facts?.userMessageId).toBe('u2-copy')
+    expect(facts?.userText).toBe('second')
+  })
+
+  it('attributes a genuine user message after a fake turn/start boundary to the REAL turn', () => {
+    const log = [
+      ...twoTurnLog(),
+      tombstone(11, 2, [6, 7, 8, 9]),
+      entry({ seq: 12, type: 'turn/start', data: { turn: 1_000_003 } }),
+      entry({ seq: 13, type: 'turn/start', data: { turn: 3 } }),
+      user(14, 3, 'u3', 'third'),
+      assistant(15, 3, 0, 'a3'),
+      turnEnd(16, 3),
+      tombstone(17, 3, [14, 15]),
+    ]
+    const state = deriveUndoState(log)
+    // The real turn/start in between re-binds the attribution: the genuine
+    // message belongs to the REAL turn, never the fake boundary.
+    expect(state.userTextByTurn.get(3)).toBe('third')
+    expect(state.userTextByTurn.get(1_000_003)).toBeUndefined()
+    const facts = state.undoneTurns.get(3)
+    expect(facts?.userMessageId).toBe('u3')
+    expect(facts?.userText).toBe('third')
+  })
+
+  it('keeps a plugin context row in a REAL turn out of the refill text', () => {
+    const log = [
+      ...twoTurnLog(),
+      tombstone(11, 2, [6, 7, 8, 9]),
+      entry({ seq: 12, type: 'turn/start', data: { turn: 3 } }),
+      copyUser(13, 'ctx-1', 'catalog text'),
+      user(14, 3, 'u3', 'third'),
+      assistant(15, 3, 0, 'a3'),
+      turnEnd(16, 3),
+      tombstone(17, 3, [13, 14, 15]),
+    ]
+    const state = deriveUndoState(log)
+    expect(state.userTextByTurn.get(3)).toBe('third')
+    const facts = state.undoneTurns.get(3)
+    expect(facts?.userMessageId).toBe('u3')
+    expect(facts?.userText).toBe('third')
   })
 
   it('keeps an old tombstone undone when a NEW message follows (redo stale)', () => {

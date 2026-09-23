@@ -22,7 +22,7 @@ import type {
   SessionEventMap,
 } from '@deepseek-ai/dsh-session'
 
-/** The plugin's canonical identity, stamped on every tombstone and copied user message. */
+/** The plugin's canonical identity, stamped on every tombstone. */
 export const UNDO_PLUGIN = 'dsh-undo'
 
 /**
@@ -115,13 +115,14 @@ export function isSurfaceTail(nodes: readonly number[], seq: number): boolean {
  * Whether one turn is the current surface tail once dsh-undo artifacts are
  * peeled off (the cascade gate, design §5 "连续 undo"): walk the surface tail
  * backwards, skipping dsh-undo tombstones and redo-copy rows of OTHER turns
- * (a fake turn ≥ {@link FAKE_TURN_BASE}, or a plugin-copied user message —
- * the §2.3 recognition rule) — and require the first real node to belong to
- * the target turn's log range. After undo N the tombstone shadows only N's
- * rows, so the peeled tail is N-1's closing row and a second undo may proceed;
- * a redo-copied turn is still a valid tail for its own copies. Mirrors the
- * client's redo-copy recognition (client/undo-state.ts §2.3) so both halves
- * agree on what dsh-undo rows look like.
+ * (a fake turn ≥ {@link FAKE_TURN_BASE}, or a replayed user message — the
+ * §2.3 fake-turn attribution rule, {@link isReplayedUserMessage}) — and
+ * require the first real node to belong to the target turn's log range. After
+ * undo N the tombstone shadows only N's rows, so the peeled tail is N-1's
+ * closing row and a second undo may proceed; a redo-copied turn is still a
+ * valid tail for its own copies. Mirrors the client's redo-copy recognition
+ * (client/undo-state.ts §2.3) so both halves agree on what dsh-undo rows look
+ * like.
  * @param events - the session's event log (indexed by seq).
  * @param nodes - the session's surface node seqs in model-visible order.
  * @param turn - the candidate turn.
@@ -144,10 +145,11 @@ export function isSurfaceTailTurn(
       ? (event.data as { turn: number }).turn
       : undefined
     if (eventTurn !== undefined && eventTurn >= FAKE_TURN_BASE && eventTurn !== turn) continue
-    // Host-log user/message data IS the message (no turn field); the plugin
-    // source marker identifies a replayed copy (design §2.3).
-    if (event.type === 'user/message'
-      && (event.data as { source?: { plugin?: unknown } } | undefined)?.source?.plugin === UNDO_PLUGIN) continue
+    // Host-log user/message data IS the message (no turn field); a replayed
+    // copy is recognized by fake-turn attribution — its closest earlier
+    // turn/start bounds the fake turn (design §2.3). The helper scans the
+    // full log, not this positional walk.
+    if (isReplayedUserMessage(events, event)) continue
     return seq >= range.startSeq && seq <= range.endSeq
   }
   return false
@@ -398,17 +400,53 @@ export function buildRedoAppendPlan(
 
 /**
  * One replayed user message: fresh id (a same-id second user row would break
- * the client assembler, design §2.2.2), deep-copied content, and the plugin
- * source marker. The user/message projection is verbatim; id/source stay off
- * the wire (design §2.3).
+ * the client assembler, design §2.2.2), deep-copied content, and the ORIGINAL
+ * source cloned verbatim. The source must stay `kind: 'user'` (with the
+ * original `rpcId`/`clientTimeZone` when present): the chat classifies any
+ * appended user/message with `source.kind !== 'user'` as a context row, not a
+ * user bubble (ui-chat conversation-nodes/message.ts source.kind rule), and
+ * the persistence audit forbids extra members on kind:'user' sources
+ * (2026-09-23 lesson: "user/message 0 source has unexpected member"). Copy
+ * recognition therefore never uses a source marker — it is fake-turn
+ * attribution ({@link isReplayedUserMessage}, design §2.3).
  */
 function replayUserMessage(data: SessionEventMap['user/message']): UserMessage {
   return {
     id: MessageId(randomUUID()),
     role: 'user',
     content: structuredClone(data.content),
-    source: { kind: 'plugin', plugin: UNDO_PLUGIN },
+    source: structuredClone(data.source),
   }
+}
+
+/**
+ * Whether one user/message event is a dsh-undo redo copy (design §2.3
+ * recognition rule): its closest earlier `turn/start` in log order carries a
+ * fake turn number (≥ {@link FAKE_TURN_BASE}). The replay plan always appends
+ * the fake `turn/start` before the replayed user/message (agent.ts appends
+ * turn/start first), and a genuine user message always follows a real
+ * turn/start, so the boundary attribution never collides. A legacy copy with
+ * the retired plugin source marker (`source.kind === 'plugin'`,
+ * `source.plugin === {@link UNDO_PLUGIN}`) also qualifies — belt-and-braces
+ * for rows written before the marker was retired.
+ * @param events - the session's event log (log order, seq-indexed).
+ * @param event - the candidate user/message event.
+ * @returns true for a replayed user message copy.
+ */
+export function isReplayedUserMessage(events: readonly SessionEvent[], event: SessionEvent): boolean {
+  if (event.type !== 'user/message') return false
+  const source = (event.data as { source?: { kind?: string; plugin?: string } } | undefined)?.source
+  if (source?.kind === 'plugin' && source.plugin === UNDO_PLUGIN) return true
+  const index = events.indexOf(event)
+  if (index < 0) return false
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const earlier = events[cursor]
+    if (earlier === undefined) continue
+    if (earlier.type !== 'turn/start') continue
+    const earlierTurn = (earlier.data as { turn?: unknown }).turn
+    return typeof earlierTurn === 'number' && earlierTurn >= FAKE_TURN_BASE
+  }
+  return false
 }
 
 /**

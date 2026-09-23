@@ -123,6 +123,45 @@ describe('UndoSurface', () => {
     surface.dispose()
   })
 
+  it('refills the composer after an undo of a REDONE turn (NEW-style kind:\'user\' copy)', async () => {
+    const copyTurnLog: SessionEventLikeEntryShape[] = [
+      ...twoTurnLog(),
+      tombstone(9, 2, [6, 7]),
+      entry(10, 'turn/start', { turn: 1_000_002 }),
+      entry(11, 'user/message', { id: 'u2-copy', role: 'user', content: [{ type: 'text', text: 'second' }], source: { kind: 'user' } }, 'append'),
+      entry(12, 'assistant/message', { turn: 1_000_002, step: 0, message: { id: 'a2-copy' } }, 'append'),
+      entry(13, 'turn/end', { turn: 1_000_002 }),
+      tombstone(14, 1_000_002, [11, 12]),
+    ]
+    const window = fakeWindow(copyTurnLog)
+    const { surface, drafts } = surfaceDeps(window)
+    const ok = await surface.undo('a2-copy')
+    expect(ok).toBe(true)
+    // The copy's kind:'user' source is attributed to the fake turn, so the
+    // second undo refills the composer (bug regression: redo vanished the
+    // bubble and the refill).
+    expect(drafts).toEqual(['second'])
+    surface.dispose()
+  })
+
+  it('refills the composer after an undo of a REDONE turn (LEGACY plugin-copied copy)', async () => {
+    const copyTurnLog: SessionEventLikeEntryShape[] = [
+      ...twoTurnLog(),
+      tombstone(9, 2, [6, 7]),
+      entry(10, 'turn/start', { turn: 1_000_002 }),
+      entry(11, 'user/message', { id: 'u2-copy', role: 'user', content: [{ type: 'text', text: 'second' }], source: { kind: 'plugin', plugin: 'dsh-undo' } }, 'append'),
+      entry(12, 'assistant/message', { turn: 1_000_002, step: 0, message: { id: 'a2-copy' } }, 'append'),
+      entry(13, 'turn/end', { turn: 1_000_002 }),
+      tombstone(14, 1_000_002, [11, 12]),
+    ]
+    const window = fakeWindow(copyTurnLog)
+    const { surface, drafts } = surfaceDeps(window)
+    const ok = await surface.undo('a2-copy')
+    expect(ok).toBe(true)
+    expect(drafts).toEqual(['second'])
+    surface.dispose()
+  })
+
   it('sends the redo RPC with the session id', async () => {
     const window = fakeWindow(twoTurnLog())
     const { surface } = surfaceDeps(window)

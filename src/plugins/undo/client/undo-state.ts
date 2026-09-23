@@ -165,8 +165,10 @@ export function deriveUndoState(entries: readonly SessionEventLikeEntryShape[]):
   let lastTurnEndSeq = -1
   let currentTurn: number | undefined
   // Redo markers, collected during the scan (seqs ascend): the last fake
-  // turn/start per restored original turn, and the last plugin-copied user
-  // message (turn-agnostic — the copy carries no turn field, design §2.3).
+  // turn/start per restored original turn (the authoritative recognition
+  // rule, design §2.3), plus the last legacy plugin-copied user message
+  // (turn-agnostic — the copy carries no turn field; the source marker is
+  // retired, kept only as legacy fallback for old rows).
   const fakeTurnStartLastSeq = new Map<number, number>()
   let lastPluginUserCopySeq = -1
 
@@ -183,11 +185,19 @@ export function deriveUndoState(entries: readonly SessionEventLikeEntryShape[]):
     } else if (event.type === 'user/message') {
       // user/message carries no turn field (host log shape): attribute the
       // text to the turn whose start is the closest earlier boundary. The
-      // data IS the message (flat content, no nested message envelope). Only
-      // genuine user input (source.kind 'user') refills the draft — context
-      // splices (magic-context, skill catalogs) never do.
+      // data IS the message (flat content, no nested message envelope).
+      // Genuine user input (source.kind 'user') refills the draft — context
+      // splices (magic-context, skill catalogs) never do — and redo copies
+      // qualify too: NEW-style copies keep the original kind:'user' source
+      // (they sit under a fake turn ≥ FAKE_TURN_BASE, design §2.3), while
+      // LEGACY copies carry the retired dsh-undo plugin marker (also only
+      // ever under a fake turn). In-turn plugin context rows in a real turn
+      // stay excluded.
       const userData = event.data as { content?: unknown; source?: { kind?: unknown; plugin?: unknown } } | undefined
-      if (currentTurn !== undefined && userData?.source?.kind === 'user') {
+      const legacyCopy = userData?.source?.kind === 'plugin'
+        && userData.source.plugin === 'dsh-undo'
+        && currentTurn !== undefined && currentTurn >= FAKE_TURN_BASE
+      if (currentTurn !== undefined && (userData?.source?.kind === 'user' || legacyCopy)) {
         userTextByTurn.set(currentTurn, messageText(userData?.content))
       }
       if (userData?.source?.plugin === 'dsh-undo') lastPluginUserCopySeq = event.seq
@@ -217,16 +227,32 @@ export function deriveUndoState(entries: readonly SessionEventLikeEntryShape[]):
       if (shadowedEvent === undefined) continue
       const key = nodeKeyOfEvent(shadowedEvent)
       if (key !== undefined) hiddenKeys.add(key)
-      if (shadowedEvent.type === 'user/message'
-        && (shadowedEvent.data as { source?: { kind?: unknown } } | undefined)?.source?.kind === 'user') {
-        userMessageId = shadowedEvent.data.id
+      if (shadowedEvent.type === 'user/message') {
+        const shadowedEventData = shadowedEvent.data as
+          | { id?: unknown; source?: { kind?: unknown; plugin?: unknown } }
+          | undefined
+        const shadowedSource = shadowedEventData?.source
+        // New-style copies keep the original kind:'user' source; legacy
+        // plugin copies count only when the shadowing tombstone sits on a
+        // fake turn (undo-of-redo) — never in a real turn.
+        const legacyCopy = shadowedSource?.kind === 'plugin'
+          && shadowedSource.plugin === 'dsh-undo'
+          && turn !== undefined && turn >= FAKE_TURN_BASE
+        if ((shadowedSource?.kind === 'user' || legacyCopy) && typeof shadowedEventData?.id === 'string') {
+          userMessageId = shadowedEventData.id
+        }
       }
     }
     if (turn === undefined) continue
-    // Redone: a replayed fake-turn boundary for this turn, or a plugin-copied
-    // user message, follows the tombstone (design §2.3 recognition rule).
-    // Markers were collected during the scan; seqs ascend, so comparing the
-    // LAST marker against the tombstone decides existence after it.
+    // Redone: a replayed fake-turn boundary for this turn follows the
+    // tombstone. Fake-turn attribution is the AUTHORITATIVE recognition rule
+    // (design §2.3): the replay plan appends `turn/start = FAKE_TURN_BASE +
+    // turn` before its copies, and a genuine new turn always opens with a
+    // real boundary. The retired plugin-copied user-message marker remains
+    // as a turn-agnostic legacy fallback for rows written before it was
+    // retired. Markers were collected during the scan; seqs ascend, so
+    // comparing the LAST marker against the tombstone decides existence
+    // after it.
     if ((fakeTurnStartLastSeq.get(turn) ?? -1) > tombstone.seq || lastPluginUserCopySeq > tombstone.seq) continue
     // The draft text comes from the scan's turn attribution — the tombstone
     // carries no extra metadata (its source must stay schema-clean for the
