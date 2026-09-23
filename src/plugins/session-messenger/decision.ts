@@ -260,30 +260,8 @@ export const REPLY_TRUNCATION_NOTE = '（已达 max-tokens，输出被截断）'
 /** Fallback content when an error turn carries no failure message. */
 export const REPLY_ERROR_FALLBACK = '目标会话回合失败（无错误详情）'
 
-/**
- * Plain-text join of one turn's final `assistant/message` text blocks (the
- * same fold the notification plugin uses; the reply needs the target's last
- * reply text, spec: 末轮 assistant 文本).
- * @param events - the target session's event log.
- * @param turn - the ended turn number.
- * @returns the turn's final assistant text, or '' when none.
- */
-export function assistantTextOfTurn(events: readonly SessionEventLike[], turn: number): string {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index]
-    if (event.type !== 'assistant/message') continue
-    const data = event.data as { turn?: unknown; message?: { content?: unknown } } | undefined
-    if (data?.turn !== turn) continue
-    const content = Array.isArray(data.message?.content) ? data.message.content : []
-    const blocks = content.filter((block): block is { type: 'text'; text: string } => {
-      if (typeof block !== 'object' || block === null) return false
-      const candidate = block as { type?: unknown; text?: unknown }
-      return candidate.type === 'text' && typeof candidate.text === 'string'
-    })
-    return blocks.map(block => block.text).join(' ').trim()
-  }
-  return ''
-}
+/** The reply text comes from the shared fold (spec: 末轮 assistant 文本). */
+export { assistantTextOfTurn } from '../../shared/assistant-text'
 
 /**
  * Reply body with its provenance header (spec): 「来自 <target title> 的回复

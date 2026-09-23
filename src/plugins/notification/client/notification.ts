@@ -4,6 +4,7 @@
  * config, and the Notification API through these functions; specs exercise
  * every branch here without any harness fixtures.
  */
+import { assistantTextOfTurn } from '../../../shared/assistant-text'
 
 /** The reason payload of a durable `turn/end` event (structural). */
 export interface TurnEndReasonShape {
@@ -82,25 +83,13 @@ export function truncate(text: string, max = 200): string {
 /**
  * Plain-text join of the final `assistant/message` of one turn's `content`
  * text blocks (spec: 最后回复前 ~200 字; simple text-chunk join is fine).
+ * Delegates to the shared fold after unwrapping the window entries.
  * @param entries - the event window entries.
  * @param turn - the closed turn number.
  * @returns the turn's final assistant text, or '' when none.
  */
 export function assistantTurnText(entries: readonly SessionEventLikeEntryShape[], turn: number): string {
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index]
-    if (entry.type !== 'event' || entry.event.type !== 'assistant/message') continue
-    const data = entry.event.data as { turn?: unknown; message?: { content?: unknown } } | undefined
-    if (data?.turn !== turn) continue
-    const content = Array.isArray(data.message?.content) ? data.message.content : []
-    const blocks = content.filter((block): block is { type: 'text'; text: string } => {
-      if (typeof block !== 'object' || block === null) return false
-      const candidate = block as { type?: unknown; text?: unknown }
-      return candidate.type === 'text' && typeof candidate.text === 'string'
-    })
-    return blocks.map(block => block.text).join(' ').trim()
-  }
-  return ''
+  return assistantTextOfTurn(entries.filter(entry => entry.type === 'event').map(entry => entry.event), turn)
 }
 
 /**
