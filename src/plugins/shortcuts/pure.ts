@@ -117,15 +117,30 @@ export function matchesBinding(parsed: ParsedBinding, ev: ShortcutEventLike, pla
   return keyMatches(parsed.key, ev.key)
 }
 
-/** Key comparison per the case rules above. */
+/**
+ * Key comparison per the case rules above. Fullwidth forms (U+FF01–U+FF5E,
+ * plus U+3000) fold to their halfwidth twins first: a CJK IME in Chinese mode
+ * emits Shift+/ as `？` (U+FF1F) with no composition events, so the guard
+ * stack passes but the raw compare would miss a halfwidth `?` binding.
+ */
 function keyMatches(bindingKey: string, eventKey: string): boolean {
   if (bindingKey.length === 1) {
-    return /^[a-zA-Z]$/.test(bindingKey)
-      ? bindingKey.toLowerCase() === eventKey.toLowerCase()
-      : bindingKey === eventKey
+    const key = foldFullwidth(bindingKey)
+    return /^[a-zA-Z]$/.test(key)
+      ? key.toLowerCase() === foldFullwidth(eventKey).toLowerCase()
+      : key === foldFullwidth(eventKey)
   }
-  const normalized = eventKey === ' ' ? 'space' : eventKey.toLowerCase()
-  return bindingKey.toLowerCase() === normalized
+  const folded = foldFullwidth(eventKey)
+  const normalized = folded === ' ' ? 'space' : folded.toLowerCase()
+  return foldFullwidth(bindingKey).toLowerCase() === normalized
+}
+
+/** Fold one fullwidth ASCII-range char to its halfwidth twin; others pass through. */
+function foldFullwidth(ch: string): string {
+  const code = ch.codePointAt(0) ?? 0
+  if (code >= 0xff01 && code <= 0xff5e) return String.fromCodePoint(code - 0xfee0)
+  if (code === 0x3000) return ' '
+  return ch
 }
 
 /**

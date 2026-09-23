@@ -225,6 +225,13 @@ describe('apply', () => {
       expect(injected.hooks.open.getSnapshot()).toBe(false)
       keydown({ key: '?', shiftKey: true })
       expect(injected.hooks.open.getSnapshot()).toBe(true)
+      // CJK IME (Chinese mode) emits the fullwidth ？ with no composition
+      // events — it must fire the same binding.
+      keydown({ key: '？', shiftKey: true })
+      expect(injected.hooks.open.getSnapshot()).toBe(false)
+      // Reopen via the halfwidth form so the Escape section below starts open.
+      keydown({ key: '?', shiftKey: true })
+      expect(injected.hooks.open.getSnapshot()).toBe(true)
       // A late document Escape handler must NOT see the keyed Escape.
       let sawEscape = false
       const lateListener = (): void => { sawEscape = true }

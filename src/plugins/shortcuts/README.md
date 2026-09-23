@@ -24,6 +24,8 @@ dsh web UI 的键盘快捷键插件：监听 document keydown，把安全键位�
 - **IME 组字**：`isComposing`、自维护 composition flag、以及 compositionend 后
   0ms 窗口内的抑制标记三者命中任一，整次按键全部跳过（同时覆盖 WebKit
   compositionend 先于最终 keydown、Chrome/Firefox 相反两种事件顺序）。
+- **IME 全角标点**：中文输入法直接上屏的全角字符（如 Shift+/ 的 `？` U+FF1F，
+  无组字事件）按 Unicode 全角→半角折叠后匹配——半角绑定的 `?` 照常触发。
 - **单键绑定**（无修饰键）：事件目标或 `document.activeElement` 是
   input / textarea / contentEditable 时跳过——打字时不抢键。
 - **修饰键组合**：无论焦点在哪照常触发（策略 B，VS Code 同款）——聊天焦点常驻

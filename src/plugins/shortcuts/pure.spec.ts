@@ -115,6 +115,13 @@ describe('matchesBinding: exact modifier set', () => {
   it('maps named Space to the space event key', () => {
     expect(matchesBinding(parseBinding('Space'), ev({ key: ' ' }), 'other')).toBe(true)
   })
+
+  it('folds fullwidth forms to halfwidth — a CJK IME ? matches a ? binding', () => {
+    expect(matchesBinding(parseBinding('Shift+?'), ev({ key: '？', shiftKey: true }), 'other')).toBe(true)
+    expect(matchesBinding(parseBinding('Shift+？'), ev({ key: '?', shiftKey: true }), 'other')).toBe(true)
+    expect(matchesBinding(parseBinding('CmdOrCtrl+B'), ev({ key: 'ｂ', metaKey: true }), 'mac')).toBe(true)
+    expect(matchesBinding(parseBinding('Space'), ev({ key: '　' }), 'other')).toBe(true)
+  })
 })
 
 describe('matchesBinding: CmdOrCtrl platform split (spec US-14)', () => {
