@@ -10,7 +10,8 @@
  * undone. Click rides the injected redo verb; the host re-validates the
  * tombstone is still the surface tail.
  */
-import { IconRefreshOutline16, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { RedoArrow } from './icons.tsx'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-store'
 import type { UndoKey } from './locales.ts'
 import type { UndoState } from './undo-state.ts'
@@ -49,7 +50,7 @@ export function RedoAction({ messageId, t, useUndo, redo }: RedoActionProps): Re
         aria-label={t('redoAria')}
         onClick={() => { void redo() }}
       >
-        <IconRefreshOutline16 />
+        <RedoArrow />
       </button>
     </Tooltip>
   )

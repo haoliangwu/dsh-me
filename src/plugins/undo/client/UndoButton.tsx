@@ -6,7 +6,8 @@
  * refill). Button chrome mirrors the host's MessageIconActions/f eedback
  * `.action` icon-button so slot-injected controls match their siblings.
  */
-import { IconRefreshOutline16, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { UndoArrow } from './icons.tsx'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-store'
 import type { UndoKey } from './locales.ts'
 import type { UndoState } from './undo-state.ts'
@@ -45,7 +46,7 @@ export function UndoButton({ messageId, t, useUndo, undo }: UndoButtonProps): Re
         aria-label={t('buttonAria')}
         onClick={() => { void undo(messageId) }}
       >
-        <IconRefreshOutline16 />
+        <UndoArrow />
       </button>
     </Tooltip>
   )
