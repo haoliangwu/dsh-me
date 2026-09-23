@@ -54,20 +54,6 @@ export interface ShortcutEngineDeps {
   readonly setTimeout?: (handler: () => void, timeout?: number) => ReturnType<typeof setTimeout>
 }
 
-/** The browser-facing modifier/key subset the engine guards on. */
-interface ModifierState {
-  readonly metaKey: boolean
-  readonly ctrlKey: boolean
-  readonly shiftKey: boolean
-  readonly altKey: boolean
-}
-
-/** A layout-safe view of the event the guard needs (extracted during dispatch). */
-interface DispatchState extends ModifierState {
-  readonly key: string
-  readonly target: EventTarget | null
-}
-
 export class ShortcutEngine {
   private readonly deps: ShortcutEngineDeps
   private bindings: Partial<Record<ActionId, ParsedBinding>> = {}
@@ -129,14 +115,6 @@ export class ShortcutEngine {
 
   private handleKeydown(ev: KeyboardEvent): void {
     if (this.disposed) return
-    const state: DispatchState = {
-      key: ev.key,
-      metaKey: ev.metaKey,
-      ctrlKey: ev.ctrlKey,
-      shiftKey: ev.shiftKey,
-      altKey: ev.altKey,
-      target: ev.target,
-    }
     // Guard 1 — IME suppression. `ev.isComposing` marks a keydown inside an
     // active composition (Chrome/Firefox fire the commit keydown here);
     // `composing` covers the gap between compositionstart and compositionend,
@@ -145,8 +123,7 @@ export class ShortcutEngine {
     // arriving synchronously after compositionend and nothing later (US-6).
     if (ev.isComposing || this.composing || this.suppressNextKeydown) return
     // Guard 2 — bare Escape before any binding match (US-8).
-    if (state.key === 'Escape' && state.metaKey === false && state.ctrlKey === false
-      && state.shiftKey === false && state.altKey === false
+    if (ev.key === 'Escape' && !ev.metaKey && !ev.ctrlKey && !ev.shiftKey && !ev.altKey
       && this.deps.onEscape?.(ev) === true) {
       ev.preventDefault()
       ev.stopPropagation()
@@ -154,10 +131,10 @@ export class ShortcutEngine {
     }
     // Guard 3 — binding match with the exact modifier set (pure matcher).
     for (const [action, parsed] of Object.entries(this.bindings) as Array<[ActionId, ParsedBinding]>) {
-      if (!matchesBinding(parsed, state, this.deps.platform)) continue
+      if (!matchesBinding(parsed, ev, this.deps.platform)) continue
       // Single-key bindings must not fire while typing into an editable target
       // (US-5). Modifier combos bypass the focus guard entirely (policy B).
-      if (this.isSingleKey(parsed) && this.isEditableTarget(state)) continue
+      if (this.isSingleKey(parsed) && this.isEditableTarget(ev)) continue
       ev.preventDefault()
       ev.stopPropagation()
       this.deps.onAction(action, ev)
@@ -174,9 +151,9 @@ export class ShortcutEngine {
    * Whether the event's focused element (ev.target first, else the active
    * element) accepts text: input, textarea, or any contentEditable element.
    */
-  private isEditableTarget(state: DispatchState): boolean {
+  private isEditableTarget(ev: KeyboardEvent): boolean {
     const { document } = this.deps
-    const el = state.target instanceof Element ? state.target : document.activeElement
+    const el = ev.target instanceof Element ? ev.target : document.activeElement
     if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return true
     return el instanceof HTMLElement && el.isContentEditable
   }

@@ -68,6 +68,28 @@ function platformOf(navigator: { platform: string }): Platform {
 }
 
 /**
+ * One observable value cell: a `HostObservable` for the selector hooks the
+ * slot runtime binds, plus a setter that skips no-op writes (same reference
+ * → no notification). Shared by the overlay open state and the display
+ * bindings.
+ */
+function makeStore<T>(initial: T): { source: HostObservable<T>; set(next: T): void } {
+  let value = initial
+  const listeners = new Set<() => void>()
+  return {
+    source: {
+      getSnapshot: () => value,
+      subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+    },
+    set(next) {
+      if (Object.is(next, value)) return
+      value = next
+      for (const listener of [...listeners]) listener()
+    },
+  }
+}
+
+/**
  * Client plugin body: register the `shortcuts` dictionaries, boot the shortcut
  * engine over the current document, fetch the validated bindings once, and
  * register the help overlay into shell.overlay.
@@ -82,28 +104,8 @@ export function apply(ctx: ClientContext): void {
   // Engine-side stores: overlay open state and display-ready bindings. Empty
   // binding map until the config fetch settles; the overlay publishes rows
   // only for actions that carry a binding string.
-  let open = false
-  const openListeners = new Set<() => void>()
-  const openSource: HostObservable<boolean> = {
-    getSnapshot: () => open,
-    subscribe: (listener) => { openListeners.add(listener); return () => { openListeners.delete(listener) } },
-  }
-  const setOpen = (next: boolean): void => {
-    if (open === next) return
-    open = next
-    for (const listener of [...openListeners]) listener()
-  }
-  let displayBindings: Readonly<Partial<Record<ActionId, string>>> = {}
-  const bindingsListeners = new Set<() => void>()
-  const bindingsSource: HostObservable<Readonly<Partial<Record<ActionId, string>>>> = {
-    getSnapshot: () => displayBindings,
-    subscribe: (listener) => { bindingsListeners.add(listener); return () => { bindingsListeners.delete(listener) } },
-  }
-  const publishBindings = (next: Readonly<Partial<Record<ActionId, string>>>): void => {
-    if (Object.is(next, displayBindings)) return
-    displayBindings = next
-    for (const listener of [...bindingsListeners]) listener()
-  }
+  const openStore = makeStore(false)
+  const bindingsStore = makeStore<Readonly<Partial<Record<ActionId, string>>>>({})
 
   // The engine owns every DOM touch in this plugin: listeners, guards, and
   // dispatch live here and nowhere else.
@@ -113,13 +115,13 @@ export function apply(ctx: ClientContext): void {
     onAction: (action) => {
       if (action === 'sidebar') scoped.layout.toggleSidebar()
       else if (action === 'rightbar') scoped.sidebarRight.toggleExpanded()
-      else setOpen(!openSource.getSnapshot())
+      else openStore.set(!openStore.source.getSnapshot())
     },
     // Bare Escape closes the overlay and swallows the key only while it is
     // open, so the rest of the page keeps its Escape behavior (US-8).
     onEscape: () => {
-      if (!openSource.getSnapshot()) return false
-      setOpen(false)
+      if (!openStore.source.getSnapshot()) return false
+      openStore.set(false)
       return true
     },
   })
@@ -142,7 +144,7 @@ export function apply(ctx: ClientContext): void {
       display[action] = displayBinding(raw, platform)
     }
     engine.setBindings(parsed)
-    publishBindings(display)
+    bindingsStore.set(display)
   }, 'dsh-ui-shortcuts: fetch config')
 
   ctx.effect(() => ctx.slots.inject('shell.overlay', () => ctx.slots.register({
@@ -150,8 +152,8 @@ export function apply(ctx: ClientContext): void {
     id: 'dsh-ui-shortcuts-help',
     locale: NS,
     inject: (): ShortcutsHelpInjected => ({
-      hooks: { bindings: bindingsSource, open: openSource },
-      close: () => setOpen(false),
+      hooks: { bindings: bindingsStore.source, open: openStore.source },
+      close: () => openStore.set(false),
     }),
   }, ShortcutsHelp)), 'dsh-ui-shortcuts: help overlay')
 }
