@@ -55,6 +55,12 @@ export function stripFrontmatter(text: string): string {
 /** The intensity-level tokens that appear inside leveled rows (off is not an intensity). */
 const LEVELED_TOKENS = CAVEMAN_LEVELS.filter(token => token !== 'off').join('|')
 
+/** Table-row matcher: `| **<level>** |` — matched once at module scope. */
+const LEVELED_TABLE_ROW = new RegExp(`^\\|\\s*\\*\\*(${LEVELED_TOKENS})\\*\\*\\s*\\|`)
+
+/** Example-line matcher: `- <level>:` — matched once at module scope. */
+const LEVELED_EXAMPLE = new RegExp(`^\\s*-\\s*(${LEVELED_TOKENS}):`)
+
 /**
  * Filter one SKILL.md body to the current level: `| **level** |` table rows
  * and `- level:` example lines keep only the rows of the active level; every
@@ -65,14 +71,12 @@ const LEVELED_TOKENS = CAVEMAN_LEVELS.filter(token => token !== 'off').join('|')
  * @returns the filtered body.
  */
 export function filterRuleset(skillBody: string, level: CavemanLevel): string {
-  const tableRow = new RegExp(`^\\|\\s*\\*\\*(${LEVELED_TOKENS})\\*\\*\\s*\\|`)
-  const example = new RegExp(`^\\s*-\\s*(${LEVELED_TOKENS}):`)
   return skillBody
     .split('\n')
     .filter(line => {
-      const table = line.match(tableRow)
+      const table = line.match(LEVELED_TABLE_ROW)
       if (table !== null) return table[1] === level
-      const sample = line.match(example)
+      const sample = line.match(LEVELED_EXAMPLE)
       if (sample !== null) return sample[1] === level
       return true
     })

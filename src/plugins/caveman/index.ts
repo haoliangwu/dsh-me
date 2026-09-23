@@ -49,6 +49,9 @@ export const FLAG_RELATIVE = '.dsh/.caveman-active'
 export const SECTION_NAME = 'dsh-caveman:rules'
 export const SECTION_ORDER = 10300
 
+/** Filesystem existence probe shared by the two skill-path resolutions. */
+const skillExists = (candidate: string): boolean => existsSync(candidate)
+
 /** Structural assembly context: the harness type only declares scope/signal, but the runtime carries the agent (agent-loop reads context.agent as well). */
 interface AssemblyContextLike {
   readonly agent?: { readonly session?: { readonly header?: { readonly cwd?: string } } }
@@ -90,7 +93,7 @@ function readFlagLevel(flagPath: string, config: Config): CavemanLevel {
 
 /** The resolved SKILL.md text, or undefined when neither the project nor the global copy exists. */
 function readSkillBody(cwd: string | undefined, globalSkillPath: string): string | undefined {
-  const path = resolveSkillPath(cwd, candidate => existsSync(candidate), globalSkillPath)
+  const path = resolveSkillPath(cwd, skillExists, globalSkillPath)
   if (path === undefined) return undefined
   try {
     return readFileSync(path, 'utf8')
@@ -150,7 +153,7 @@ export function apply(ctx: Context, config: Config): void {
         case 'status': {
           const level = readFlagLevel(flagPath, config)
           const cwd = invocation.agent?.session?.header?.cwd
-          const skillPath = resolveSkillPath(cwd, candidate => existsSync(candidate), globalSkillPath)
+          const skillPath = resolveSkillPath(cwd, skillExists, globalSkillPath)
           return {
             kind: 'success',
             text: `CAVEMAN level: ${level} (flag: ${flagPath}; SKILL.md: ${skillPath ?? '(none)'}; levels: ${CAVEMAN_LEVELS.join(', ')})`,
