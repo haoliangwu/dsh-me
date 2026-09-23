@@ -10,14 +10,16 @@ dsh web UI 的键盘快捷键插件：监听 document keydown，把安全键位�
 | --- | --- | --- | --- |
 | 侧边栏 | `CmdOrCtrl+B` | 收/展左侧栏 | `ctx.layout.toggleSidebar()` |
 | 右面板 | `CmdOrCtrl+I` | 开/关右面板 | `ctx.sidebarRight.toggleExpanded()` |
+| 聚焦输入框 | `/` | 聚焦当前会话 composer | `ctx.sessions` / `ctx.uiSession` 结构读取 + `SessionInput.focus()` |
 | 帮助浮层 | `Shift+?` | 打开/关闭快捷键帮助 | `shell.overlay` slot 注册的 Modal |
 
 `CmdOrCtrl` 平台中立：macOS 上等同 `⌘`，Windows/Linux 上等同 `Ctrl`。帮助浮层
 内显示当前平台符号（macOS 显示 ⌘，其余显示 Ctrl）。
 
-> **聚焦 composer 动作（`/`）不在本版本**：pinned `0.1.5-rc.2` 的
-> `SessionInput` 没有 `focus()`，按前置验证结论整条砍掉，不引入 DOM hack。等
-> pinned 版本补上 `SessionInput.focus()` 后随依赖升级回归。
+> **聚焦 composer 动作（`/`）可用性**：当运行中的 dsh runtime 提供
+> `SessionInput.focus()` 时生效（0.1.6+）；旧 runtime 上按键只记一条 warning
+> 且不做任何事（不崩溃）。`/` 是单键（文本类）绑定——编辑框聚焦时按键保持普通
+> 输入（composer 内打字不抢键，spec US-5），从正文/历史聚焦时触发快捷键。
 
 ## 守卫（guard）
 
@@ -45,6 +47,7 @@ plugins:
     bindings:
       sidebar: CmdOrCtrl+B      # 默认
       rightbar: CmdOrCtrl+I     # 默认
+      focus: /                  # 默认
       help: Shift+?             # 默认
 ```
 

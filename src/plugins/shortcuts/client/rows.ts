@@ -8,14 +8,15 @@ import type { ActionId } from '../pure.ts'
 
 /** One help-overlay row: the action and its dictionary label key. */
 export interface ShortcutRow {
-  readonly labelKey: 'actionSidebar' | 'actionRightbar' | 'actionHelp'
+  readonly labelKey: 'actionSidebar' | 'actionRightbar' | 'actionFocus' | 'actionHelp'
   readonly bindingKey: ActionId
 }
 
-/** The three actions + labels in canonical display order. */
+/** The four actions + labels in canonical display order. */
 export const SHORTCUT_ROWS: readonly ShortcutRow[] = [
   { labelKey: 'actionSidebar', bindingKey: 'sidebar' },
   { labelKey: 'actionRightbar', bindingKey: 'rightbar' },
+  { labelKey: 'actionFocus', bindingKey: 'focus' },
   { labelKey: 'actionHelp', bindingKey: 'help' },
 ]
 

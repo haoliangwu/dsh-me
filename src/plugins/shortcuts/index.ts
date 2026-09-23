@@ -2,7 +2,7 @@
  * dsh-ui-shortcuts, node half.
  *
  * Mounts the host-plane Config as a Connection RPC channel: the browser half
- * reads the validated bindings (three actions: sidebar, rightbar, help) through
+ * reads the validated bindings (four actions: sidebar, rightbar, focus, help) through
  * `ctx.connection.rpc.call('/shortcuts', 'config', {})`. Binding syntax is
  * validated at Config load through the shared pure parser (spec US-10: a
  * syntax error must fail at startup, not silently no-op), and the resolved
@@ -33,6 +33,7 @@ export const inject = []
 const DEFAULT_BINDINGS: Record<ActionId, string> = {
   sidebar: 'CmdOrCtrl+B',
   rightbar: 'CmdOrCtrl+I',
+  focus: '/',
   help: 'Shift+?',
 }
 
@@ -47,6 +48,7 @@ export const Config = z.object({
     z.object({
       sidebar: z.string().default(DEFAULT_BINDINGS.sidebar),
       rightbar: z.string().default(DEFAULT_BINDINGS.rightbar),
+      focus: z.string().default(DEFAULT_BINDINGS.focus),
       help: z.string().default(DEFAULT_BINDINGS.help),
     }),
     (bindings, options) => {

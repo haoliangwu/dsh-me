@@ -11,7 +11,7 @@
  */
 
 /** A resolved action id. */
-export type ActionId = 'sidebar' | 'rightbar' | 'help'
+export type ActionId = 'sidebar' | 'rightbar' | 'focus' | 'help'
 
 /** The two platform families the matcher and display path distinguish. */
 export type Platform = 'mac' | 'other'

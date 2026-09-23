@@ -1,6 +1,7 @@
 /**
- * dsh-ui-shortcuts, browser half: the three shortcut actions wired end to end
- * (spec US-1/2/4 — the composer-focus action is CUT, see README). The config
+ * dsh-ui-shortcuts, browser half: the four shortcut actions wired end to end
+ * (spec US-1/2/4/5 — the composer-focus action degrades gracefully on
+ * runtimes without `SessionInput.focus()`, see README). The config
  * (validated bindings) is fetched once from the host half through the
  * Connection RPC channel `/shortcuts` endpoint `config`; until the fetch
  * settles the engine runs with an EMPTY binding set, and the overlay shows no
@@ -57,10 +58,19 @@ interface ShortcutsCtx {
   connection: { rpc: { call(channel: string, endpoint: string, payload: unknown): Promise<RpcResult<unknown>> } }
   layout: { toggleSidebar(): void }
   sidebarRight: { toggleExpanded(): void }
+  sessions: {
+    binding(sessionId: string): {
+      readonly sessionId: string
+      readonly ctx: { get(name: string): unknown }
+    } | undefined
+  }
+  uiSession: {
+    adapter: { current: HostObservable<{ readonly key: string | undefined }> }
+  }
 }
 
-/** Required services: the slot registry, locale, the RPC carrier, and the two layout faces. */
-export const inject = ['slots', 'locale', 'connection', 'layout', 'sidebarRight']
+/** Required services: the slot registry, locale, the RPC carrier, the layout faces, and the sessions/uiSession mirrors. */
+export const inject = ['slots', 'locale', 'connection', 'layout', 'sidebarRight', 'sessions', 'uiSession']
 
 /** Browser platform family for CmdOrCtrl resolution and overlay display. */
 function platformOf(navigator: { platform: string }): Platform {
@@ -99,6 +109,7 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-ui-shortcuts: dictionaries')
 
   const scoped = ctx as unknown as ShortcutsCtx
+  const logger = ctx.logger
   const platform = platformOf(navigator)
 
   // Engine-side stores: overlay open state and display-ready bindings. Empty
@@ -106,6 +117,35 @@ export function apply(ctx: ClientContext): void {
   // only for actions that carry a binding string.
   const openStore = makeStore(false)
   const bindingsStore = makeStore<Readonly<Partial<Record<ActionId, string>>>>({})
+
+  // Composer-focus degradation: pinned 0.1.5-rc.2's SessionInput has no
+  // focus(); the running runtime does (0.1.6-alpha.2) but older ones must not
+  // crash. Missing focus()/conversation/input logs ONE warning per page, then
+  // stays silent so repeated presses do not spam the console (US-5).
+  let focusUnavailableWarned = false
+  const warnFocusUnavailable = (): void => {
+    if (focusUnavailableWarned) return
+    focusUnavailableWarned = true
+    logger.warn('dsh-ui-shortcuts: focus action unavailable — the running dsh runtime predates SessionInput.focus()')
+  }
+  const focusComposer = (): void => {
+    const sessionKey = scoped.uiSession.adapter.current.getSnapshot().key
+    if (sessionKey === undefined) return // no session selected — nothing to focus
+    const binding = scoped.sessions.binding(sessionKey)
+    if (binding === undefined) {
+      warnFocusUnavailable()
+      return
+    }
+    const conversation = binding.ctx.get('conversation') as
+      | { input?: { for(actx: unknown): { focus?(): void } | undefined } | undefined }
+      | undefined
+    const facade = conversation?.input?.for(binding.ctx)
+    if (facade?.focus !== undefined) {
+      facade.focus()
+      return
+    }
+    warnFocusUnavailable()
+  }
 
   // The engine owns every DOM touch in this plugin: listeners, guards, and
   // dispatch live here and nowhere else.
@@ -115,6 +155,7 @@ export function apply(ctx: ClientContext): void {
     onAction: (action) => {
       if (action === 'sidebar') scoped.layout.toggleSidebar()
       else if (action === 'rightbar') scoped.sidebarRight.toggleExpanded()
+      else if (action === 'focus') focusComposer()
       else openStore.set(!openStore.source.getSnapshot())
     },
     // Bare Escape closes the overlay and swallows the key only while it is

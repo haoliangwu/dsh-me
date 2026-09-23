@@ -78,13 +78,13 @@ describe('plugin contract', () => {
 describe('Config schema', () => {
   it('resolves the default bindings for an empty config', () => {
     expect(Config({})).toEqual({
-      bindings: { sidebar: 'CmdOrCtrl+B', rightbar: 'CmdOrCtrl+I', help: 'Shift+?' },
+      bindings: { sidebar: 'CmdOrCtrl+B', rightbar: 'CmdOrCtrl+I', focus: '/', help: 'Shift+?' },
     })
   })
 
   it('keeps defaults for actions a partial config does not override', () => {
     expect(Config({ bindings: { sidebar: 'CmdOrCtrl+K' } })).toEqual({
-      bindings: { sidebar: 'CmdOrCtrl+K', rightbar: 'CmdOrCtrl+I', help: 'Shift+?' },
+      bindings: { sidebar: 'CmdOrCtrl+K', rightbar: 'CmdOrCtrl+I', focus: '/', help: 'Shift+?' },
     })
   })
 
@@ -111,7 +111,7 @@ describe('webServer channel', () => {
     expect(message.rpcId).toBe('r1')
     expect(message.result).toEqual({
       ok: true,
-      value: { sidebar: 'CmdOrCtrl+B', rightbar: 'CmdOrCtrl+I', help: 'Shift+?' },
+      value: { sidebar: 'CmdOrCtrl+B', rightbar: 'CmdOrCtrl+I', focus: '/', help: 'Shift+?' },
     })
   })
 
@@ -121,7 +121,7 @@ describe('webServer channel', () => {
     expect(res.statusCode).toBe(200)
     expect(message.result).toEqual({
       ok: true,
-      value: { sidebar: 'Alt+Shift+S', rightbar: 'CmdOrCtrl+I', help: '?' },
+      value: { sidebar: 'Alt+Shift+S', rightbar: 'CmdOrCtrl+I', focus: '/', help: '?' },
     })
   })
 

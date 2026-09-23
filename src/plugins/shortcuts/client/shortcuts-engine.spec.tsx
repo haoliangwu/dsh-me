@@ -7,13 +7,13 @@
  * is asserted: service calls, guard interception/pass-through, config
  * adoption, overlay open/close, and fiber-dispose listener removal.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { apply, inject } from './index.ts'
 import { ShortcutsHelp } from './ShortcutsHelp.tsx'
 import { en, zh } from './locales.ts'
 
-type ConfigResponse = Record<'sidebar' | 'rightbar' | 'help', string>
+type ConfigResponse = Record<'sidebar' | 'rightbar' | 'focus' | 'help', string>
 
 /** One recorded slot entry, mirroring the registry's register() shape. */
 interface FakeEntry {
@@ -49,6 +49,26 @@ async function fullBench(config: ConfigResponse, platform: 'mac' | 'other') {
   const actions: Array<'sidebar' | 'rightbar'> = []
   const slots = fakeSlots()
   const dictionaries = new Map<string, unknown>()
+  // Per-bench mutable focus seam: the fake uiSession current binding, the
+  // focus facade `for()` resolves, and the last binding ctx handed out so
+  // tests can assert `for()` received the session's own ctx ("right target").
+  const focusSpy = vi.fn()
+  const bench = {
+    currentBinding: { key: 's1' as string | undefined },
+    focusFor: (): { focus?: () => void } => ({ focus: focusSpy }),
+    forTargets: [] as unknown[],
+    bindingCtx: undefined as { get(name: string): unknown } | undefined,
+  }
+  // Cordis' default buffer exporter threshold is INFO, so warns are dropped
+  // there; register a capture exporter with a tall level to observe the
+  // one-shot focus-unavailable warning (effect-scoped, disposed with the fiber).
+  const warns: unknown[][] = []
+  ctx.logger.exporter({
+    levels: { default: 4 },
+    export: (message: { type: string; args: unknown[] }) => {
+      if (message.type === 'warn') warns.push(message.args)
+    },
+  })
   ctx.provide('slots', slots as never)
   ctx.provide('locale', {
     register: (name: string, values: unknown) => {
@@ -61,15 +81,33 @@ async function fullBench(config: ConfigResponse, platform: 'mac' | 'other') {
   } as never)
   ctx.provide('layout', { toggleSidebar: () => { actions.push('sidebar') } } as never)
   ctx.provide('sidebarRight', { toggleExpanded: () => { actions.push('rightbar') } } as never)
+  ctx.provide('sessions', {
+    binding: (sessionId: string) => {
+      if (sessionId !== 's1') return undefined
+      const binding = {
+        sessionId: 's1',
+        ctx: {
+          get: (name: string): unknown => name === 'conversation' ? {
+            input: { for: (actx: unknown) => { bench.forTargets.push(actx); return bench.focusFor() } },
+          } : undefined,
+        },
+      }
+      bench.bindingCtx = binding.ctx
+      return binding
+    },
+  } as never)
+  ctx.provide('uiSession', {
+    adapter: { current: { getSnapshot: () => bench.currentBinding } },
+  } as never)
   const fiber = await ctx.plugin({ inject, apply })
   // The config fetch effect resolves on the microtask queue; one tick settles it.
   await new Promise((resolve) => { setTimeout(resolve, 0) })
-  return { ctx, fiber, slots, dictionaries, actions }
+  return { ctx, fiber, slots, dictionaries, actions, focusSpy, bench, warns }
 }
 
-/** Dispatch one real keydown on the document. */
-function keydown(init: KeyboardEventInit): void {
-  document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }))
+/** Dispatch one real keydown on the document; false = an engine handler preventDefaulted it. */
+function keydown(init: KeyboardEventInit): boolean {
+  return document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }))
 }
 
 /** Advance past the engine's 0ms IME-suppress time-box (real jsdom timers). */
@@ -77,11 +115,11 @@ function tick(): Promise<void> {
   return new Promise((resolve) => { setTimeout(resolve, 0) })
 }
 
-const DEFAULTS: ConfigResponse = { sidebar: 'CmdOrCtrl+B', rightbar: 'CmdOrCtrl+I', help: 'Shift+?' }
+const DEFAULTS: ConfigResponse = { sidebar: 'CmdOrCtrl+B', rightbar: 'CmdOrCtrl+I', focus: '/', help: 'Shift+?' }
 
 describe('apply', () => {
   it('declares the services it binds', () => {
-    expect(inject).toEqual(['slots', 'locale', 'connection', 'layout', 'sidebarRight'])
+    expect(inject).toEqual(['slots', 'locale', 'connection', 'layout', 'sidebarRight', 'sessions', 'uiSession'])
   })
 
   it('registers the locale dictionaries and the shell.overlay entry', async () => {
@@ -234,6 +272,66 @@ describe('apply', () => {
       expect(actions).toEqual([])
       keydown({ key: 's', altKey: true, shiftKey: true })
       expect(actions).toEqual(['sidebar'])
+    } finally {
+      await fiber.dispose()
+    }
+  })
+
+  it('focus: / with body focus focuses the current session composer and prevents the default key', async () => {
+    const { fiber, focusSpy, bench } = await fullBench(DEFAULTS, 'mac')
+    try {
+      // Body holds focus (document.activeElement, not editable) — the textual
+      // guard passes and the binding fires.
+      expect(keydown({ key: '/' })).toBe(false)
+      expect(focusSpy).toHaveBeenCalledTimes(1)
+      expect(focusSpy).toHaveBeenCalledWith()
+      // for() received the session binding's own ctx — the "right target".
+      expect(bench.forTargets).toEqual([bench.bindingCtx])
+      expect(bench.bindingCtx).toBeDefined()
+    } finally {
+      await fiber.dispose()
+    }
+  })
+
+  it('focus: / while an input holds focus is a normal keystroke — focus NOT called', async () => {
+    const { fiber, focusSpy } = await fullBench(DEFAULTS, 'mac')
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
+    try {
+      expect(keydown({ key: '/' })).toBe(true)
+      expect(focusSpy).not.toHaveBeenCalled()
+      input.blur()
+      keydown({ key: '/' })
+      expect(focusSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      input.remove()
+      await fiber.dispose()
+    }
+  })
+
+  it('focus: no session selected — nothing called, no crash', async () => {
+    const { fiber, focusSpy, bench } = await fullBench(DEFAULTS, 'mac')
+    bench.currentBinding = { key: undefined }
+    try {
+      keydown({ key: '/' })
+      expect(focusSpy).not.toHaveBeenCalled()
+      expect(bench.forTargets).toEqual([])
+    } finally {
+      await fiber.dispose()
+    }
+  })
+
+  it('focus: runtime without SessionInput.focus() — no crash, ONE warning across repeated presses', async () => {
+    const { fiber, focusSpy, bench, warns } = await fullBench(DEFAULTS, 'mac')
+    bench.focusFor = () => ({}) // 0.1.5-era facade: no focus()
+    try {
+      keydown({ key: '/' })
+      expect(focusSpy).not.toHaveBeenCalled()
+      expect(warns).toHaveLength(1)
+      expect(warns[0]).toEqual(['dsh-ui-shortcuts: focus action unavailable — the running dsh runtime predates SessionInput.focus()'])
+      keydown({ key: '/' })
+      expect(warns).toHaveLength(1)
     } finally {
       await fiber.dispose()
     }

@@ -17,7 +17,7 @@ import { en, zh } from './locales.ts'
 afterEach(cleanup)
 
 /** The binding-snapshot union the useBindings selector reads. */
-type BindingSnapshot = Readonly<Partial<Record<'sidebar' | 'rightbar' | 'help', string>>>
+type BindingSnapshot = Readonly<Partial<Record<'sidebar' | 'rightbar' | 'focus' | 'help', string>>>
 
 /** One props bundle: open state, binding strings, locale dict, and a close spy. */
 function propsFor(open: boolean, bindings: BindingSnapshot, dict: Record<string, string>, close = () => {}) {
@@ -36,13 +36,15 @@ function propsFor(open: boolean, bindings: BindingSnapshot, dict: Record<string,
 
 describe('ShortcutsHelp', () => {
   it('renders one row per bound action with its binding label when open', () => {
-    const view = render(<ShortcutsHelp {...propsFor(true, { sidebar: '⌘B', rightbar: '⌘I', help: '⇧?' }, zh)} />)
+    const view = render(<ShortcutsHelp {...propsFor(true, { sidebar: '⌘B', rightbar: '⌘I', focus: '/', help: '⇧?' }, zh)} />)
     expect(view.getByText('键盘快捷键')).toBeDefined()
     expect(view.getByText('收起/展开侧边栏')).toBeDefined()
     expect(view.getAllByText('⌘')).toHaveLength(2)
     expect(view.getByText('B')).toBeDefined()
     expect(view.getByText('开/关右面板')).toBeDefined()
     expect(view.getByText('I')).toBeDefined()
+    expect(view.getByText('聚焦输入框')).toBeDefined()
+    expect(view.getByText('/')).toBeDefined()
     expect(view.getByText('打开帮助浮层')).toBeDefined()
     expect(view.getByText('⇧')).toBeDefined()
     expect(view.getByText('?')).toBeDefined()
