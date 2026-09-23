@@ -9,6 +9,7 @@
     "./plugins/notification": "./lib/plugins/notification.js",
     "./plugins/session-messenger": "./lib/plugins/session-messenger.js",
     "./plugins/caveman": "./lib/plugins/caveman.js",
+    "./plugins/memory": "./lib/plugins/memory.js",
     "./plugins/btw": "./lib/plugins/btw.js",
     "./plugins/x-opencode-session-shim": "./lib/plugins/x-opencode-session-shim.js",
     "./plugins/reference": "./lib/plugins/reference.js",
