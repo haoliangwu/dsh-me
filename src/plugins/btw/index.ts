@@ -54,6 +54,22 @@ function titleOfObservation(result: SessionTitleObservationResult | undefined): 
   return title?.title
 }
 
+/**
+ * The child agent's followup prompt: the bare question when no context was
+ * assembled, otherwise the context plus the question (spec wording differs by
+ * whether the context is the parent's own conversation or a snapshot).
+ * @param question - the parsed `/btw` question.
+ * @param context - the assembled context text ('' → question only).
+ * @param fromCurrentSession - whether the context is the parent conversation.
+ * @returns the followup prompt.
+ */
+function buildPrompt(question: string, context: string, fromCurrentSession: boolean): string {
+  if (context === '') return question
+  const sourceLabel = fromCurrentSession ? 'the current conversation' : 'another session (read-only snapshot)'
+  const answerBase = fromCurrentSession ? 'the context above' : 'the snapshot above'
+  return `Context from ${sourceLabel}:\n${context}\n\nQuestion: ${question}\n\nAnswer the question based on ${answerBase}, or say so when it does not answer it.`
+}
+
 export function apply(ctx: Context) {
   ctx.commands.register({
     name: 'btw',
@@ -131,11 +147,7 @@ export function apply(ctx: Context) {
         )
         context = packed
       }
-      const prompt = context === ''
-        ? parsed.question
-        : targetId === parent.id
-          ? `Context from the current conversation:\n${context}\n\nQuestion: ${parsed.question}\n\nAnswer the question based on the context above, or say so when it does not answer it.`
-          : `Context from another session (read-only snapshot):\n${context}\n\nQuestion: ${parsed.question}\n\nAnswer the question based on the snapshot above, or say so when it does not answer it.`
+      const prompt = buildPrompt(parsed.question, context, targetId === parent.id)
 
       // 3. Create a fresh child agent with the same model selection, drive it,
       // and always tear the handle down (cancellation or not).

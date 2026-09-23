@@ -23,6 +23,15 @@ function leadingFor(state: RowState): ReactNode {
   return state === 'error' ? <StateDot state="error" /> : <IconApiOutline14 size={14} />
 }
 
+/** The one-line summary: the running label while unsettled, an outcome label
+ * only when the outcome carries no text (the body renders real text), else
+ * null so the row renders no summary. */
+function summaryOf(t: (key: string) => string, state: RowState, text: string | undefined): string | null {
+  if (state === 'running') return t('running')
+  if (text === undefined) return state === 'error' ? t('failed') : t('done')
+  return null
+}
+
 export function BtwCommandCard({ node, t }: BtwCommandCardProps) {
   const state = stateOf(node.outcome)
   const text = node.outcome?.text
@@ -30,11 +39,7 @@ export function BtwCommandCard({ node, t }: BtwCommandCardProps) {
     code: { copyLabel: t('copy'), copiedLabel: t('copied') },
     footnotes: t('footnotes'),
   }), [t])
-  const summary = node.outcome === null
-    ? t('running')
-    : text === undefined
-      ? (node.outcome.kind === 'error' ? t('failed') : t('done'))
-      : null
+  const summary = summaryOf(t, state, text)
   return (
     <div className={css.root} data-state={state}>
       <div className={css.row}>

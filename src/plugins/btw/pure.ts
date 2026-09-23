@@ -75,7 +75,7 @@ export type TitleResolution =
 export function resolveTitleTarget(title: string, candidates: readonly TitleCandidate[]): TitleResolution {
   const matches = candidates.filter(candidate => candidate.title === title)
   if (matches.length === 0) return { kind: 'not-found' }
-  if (matches.length === 1) return { kind: 'target', sessionId: matches[0]?.sessionId as string }
+  if (matches.length === 1) return { kind: 'target', sessionId: matches[0].sessionId }
   return { kind: 'ambiguous', candidates: matches }
 }
 
@@ -178,7 +178,10 @@ export function selectSnapshotSegments(messages: readonly SnapshotMessage[], max
 
   const headExhausted = head.consumedLines >= lines.length
   const tailEnd = lines.length - tail.consumedLines
-  const middleFrom = head.consumedLines + (head.partial === '' && !headExhausted ? 1 : head.partial === '' ? 0 : 1)
+  // Middle starts after the head's wholly-kept lines. When head ended without
+  // a partial (either a whole line is still unread, or nothing is left), there
+  // is no partially-kept boundary line to step over.
+  const middleFrom = head.consumedLines + (head.partial === '' && headExhausted ? 0 : 1)
   const middleTo = tailEnd - (tail.partial === '' ? 0 : 1)
   const omittedMessages = Math.max(0, middleTo - middleFrom)
 
