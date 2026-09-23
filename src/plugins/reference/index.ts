@@ -49,6 +49,7 @@ import {
   normalizeTable,
   referencePathError,
   resolveCacheDir,
+  resolveReferencePath,
   type LoggerLike,
   type RefreshMode,
 } from './pure.ts'
@@ -205,9 +206,11 @@ export function apply(ctx: Context, config: Config): void {
   const scoped = ctx as unknown as ReferenceCtx
   const home = homedir()
   const scope = scoped.settings.register('dsh-reference', Schema)
-  const cacheDir = resolveCacheDir(config.cacheDir, home)
-    ?? (scoped.logger.warn(`dsh-reference: cacheDir「${config.cacheDir}」不是绝对路径或 ~/ 开头；使用默认 ${defaultCacheDir(home)}`),
-      defaultCacheDir(home))
+  let cacheDir = resolveCacheDir(config.cacheDir, home)
+  if (cacheDir === undefined) {
+    scoped.logger.warn(`dsh-reference: cacheDir「${config.cacheDir}」不是绝对路径或 ~/ 开头；使用默认 ${defaultCacheDir(home)}`)
+    cacheDir = defaultCacheDir(home)
+  }
 
   /** Materialize every git entry of the current table in the background. */
   const materializeAll = (): void => {
@@ -381,7 +384,7 @@ async function serveExists(
   }
   // Stat the resolved absolute path; every stat failure (missing, permission,
   // race) answers false — the settings page treats it as a non-blocking ⚠.
-  const resolved = value.path.startsWith('~/') ? `${home}/${value.path.slice(2)}` : value.path
+  const resolved = resolveReferencePath(value.path, home)
   try {
     await stat(resolved)
     result({ ok: true, value: { exists: true } })

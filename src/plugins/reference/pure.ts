@@ -167,10 +167,11 @@ export function entryShapeError(entry: { readonly path?: unknown; readonly repos
     return '必须二选一：{ path }（本地目录）或 { repository, branch? }（Git 仓库）；两种形态混用或缺失均不允许'
   }
   if (hasRepository) {
-    if (entry.repository === '') {
+    const repository = entry.repository as string
+    if (repository === '') {
       return 'repository 不能为空'
     }
-    if (typeof entry.repository === 'string' && isFileRepository(entry.repository)) {
+    if (isFileRepository(repository)) {
       return 'repository 不支持 file:// 本地仓库（与 OC 对齐）'
     }
     if (entry.branch !== undefined && typeof entry.branch !== 'string') {
@@ -464,5 +465,7 @@ export function serializeMention(path: string): string {
 
 /** Code-unit alias comparison — locale-independent, stable across machines. */
 function compareAliases(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0
+  if (a < b) return -1
+  if (a > b) return 1
+  return 0
 }

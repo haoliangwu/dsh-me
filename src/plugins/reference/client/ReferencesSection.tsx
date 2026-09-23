@@ -114,12 +114,13 @@ function draftErrors(draft: Draft, alreadyTaken: boolean, t: ReferencesSectionPr
     const path = referencePathError(draft.path)
     if (path !== undefined) errors.path = path
   } else {
+    const branch = draft.branch.trim()
     const shape = entryShapeError({
       repository: draft.repository.trim(),
-      ...(draft.branch.trim() === '' ? {} : { branch: draft.branch.trim() }),
+      ...(branch === '' ? {} : { branch }),
     })
     if (shape !== undefined) {
-      if (draft.branch.trim() !== '' && branchValidationError(draft.branch.trim()) !== undefined) {
+      if (branch !== '' && branchValidationError(branch) !== undefined) {
         errors.branch = shape
       } else {
         errors.repository = shape
@@ -398,55 +399,52 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
       <p className={css.intro}>{t('intro')}</p>
       {rows.length === 0 ? <p className={css.status}>{t('empty')}</p> : null}
       <ul className={css.rows}>
-        {rows.map(({ alias, entry }) => (
-          <li key={alias} className={css.rowCard}>
-            <div className={css.rowMain}>
-              <div className={css.rowIdentity}>
-                <span className={css.rowAlias}>{alias}</span>
-                {entry.repository !== undefined ? (
-                  <span className={css.rowPath}>{entry.repository}</span>
-                ) : (
-                  <span className={css.rowPath}>{entry.path}</span>
-                )}
-                {(entry.branch !== undefined || entry.refresh === 'always') && (
-                  <span className={css.rowDesc}>
-                    {entry.branch !== undefined ? `branch: ${entry.branch}` : ''}
-                    {entry.refresh === 'always' ? (entry.branch !== undefined ? ' · ' : '') + t('alwaysRefresh') : ''}
-                  </span>
-                )}
-                {entry.description !== undefined && <span className={css.rowDesc}>{entry.description}</span>}
-              </div>
-              <div className={css.rowControls}>
-                {warnings[alias] === false && (
-                  <span className={css.warn} role="img" aria-label={t('warn')} title={t('warn')}>⚠ {t('warn')}</span>
-                )}
-                <Switch
-                  label={t('autoInclude')}
-                  checked={entry.autoInclude}
-                  title={t('autoIncludeHint')}
-                  onChange={() => { toggleAutoInclude(alias, entry) }}
-                />
-              </div>
-            </div>
-            <div className={css.rowActions}>
-              <Button variant="ghost" size="sm" onClick={() => { openEdit(alias, entry) }}>{t('edit')}</Button>
-              {confirmingDelete === alias ? (
-                <Button variant="outline" size="sm" onClick={() => { remove(alias) }}>{t('confirm')}</Button>
-              ) : (
-                <Button variant="ghost" size="sm" onClick={() => { setConfirmingDelete(alias) }}>{t('delete')}</Button>
-              )}
-            </div>
-            {editing.mode === 'row' && editing.alias === alias && (
-              <div className={css.inlineEdit}>
-                {renderForm(editing.draft, editing.errors, draft => { setEditing({ ...editing, draft }) })}
-                <div className={css.formActions}>
-                  <Button variant="ghost" size="sm" onClick={() => { setEditing({ mode: 'idle' }) }}>{t('cancel')}</Button>
-                  <Button variant="primary" size="sm" onClick={() => { void saveDraft(editing.draft, editing.alias) }}>{t('save')}</Button>
+        {rows.map(({ alias, entry }) => {
+          const markers: string[] = []
+          if (entry.branch !== undefined) markers.push(`branch: ${entry.branch}`)
+          if (entry.refresh === 'always') markers.push(t('alwaysRefresh'))
+          const markerText = markers.length === 0 ? undefined : markers.join(' · ')
+          return (
+            <li key={alias} className={css.rowCard}>
+              <div className={css.rowMain}>
+                <div className={css.rowIdentity}>
+                  <span className={css.rowAlias}>{alias}</span>
+                  <span className={css.rowPath}>{entry.repository ?? entry.path}</span>
+                  {markerText !== undefined && <span className={css.rowDesc}>{markerText}</span>}
+                  {entry.description !== undefined && <span className={css.rowDesc}>{entry.description}</span>}
+                </div>
+                <div className={css.rowControls}>
+                  {warnings[alias] === false && (
+                    <span className={css.warn} role="img" aria-label={t('warn')} title={t('warn')}>⚠ {t('warn')}</span>
+                  )}
+                  <Switch
+                    label={t('autoInclude')}
+                    checked={entry.autoInclude}
+                    title={t('autoIncludeHint')}
+                    onChange={() => { toggleAutoInclude(alias, entry) }}
+                  />
                 </div>
               </div>
-            )}
-          </li>
-        ))}
+              <div className={css.rowActions}>
+                <Button variant="ghost" size="sm" onClick={() => { openEdit(alias, entry) }}>{t('edit')}</Button>
+                {confirmingDelete === alias ? (
+                  <Button variant="outline" size="sm" onClick={() => { remove(alias) }}>{t('confirm')}</Button>
+                ) : (
+                  <Button variant="ghost" size="sm" onClick={() => { setConfirmingDelete(alias) }}>{t('delete')}</Button>
+                )}
+              </div>
+              {editing.mode === 'row' && editing.alias === alias && (
+                <div className={css.inlineEdit}>
+                  {renderForm(editing.draft, editing.errors, draft => { setEditing({ ...editing, draft }) })}
+                  <div className={css.formActions}>
+                    <Button variant="ghost" size="sm" onClick={() => { setEditing({ mode: 'idle' }) }}>{t('cancel')}</Button>
+                    <Button variant="primary" size="sm" onClick={() => { void saveDraft(editing.draft, editing.alias) }}>{t('save')}</Button>
+                  </div>
+                </div>
+              )}
+            </li>
+          )
+        })}
       </ul>
       <div className={css.rowActions}>
         <Button variant="outline" size="sm" onClick={() => { setEditing({ mode: 'add', draft: EMPTY_DRAFT, errors: {} }) }}>{t('add')}</Button>

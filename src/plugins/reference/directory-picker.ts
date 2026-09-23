@@ -97,7 +97,7 @@ export async function pickDirectoryOnHost(home: string): Promise<PickDirectoryRe
 
 /** Spawn one picker and collect its code and stdout; never rejects. */
 async function runPicker(invocation: PickerInvocation): Promise<PickerRunOutcome> {
-  return await new Promise((resolve) => {
+  return new Promise((resolve) => {
     const [binary, ...args] = invocation
     const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'ignore'] })
     let stdout = ''
