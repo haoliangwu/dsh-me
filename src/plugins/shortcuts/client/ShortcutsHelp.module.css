@@ -1,0 +1,59 @@
+/**
+ * ShortcutsHelp overlay list: one flex row per action (label left, keycap
+ * group right, shared right edge) with hairline dividers between rows.
+ * Keycaps are chip-style <kbd> surfaces — every glyph of the display
+ * binding gets its own chip — styled only with dsw semantic tokens so the
+ * light and dark shell themes both resolve correctly.
+ */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 36px;
+}
+
+.row + .row {
+  border-top: 1px solid var(--dsw-alias-border-l1);
+}
+
+.label {
+  flex: none;
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.keys {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  padding: 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-subtle);
+  color: var(--dsw-alias-label-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+  white-space: nowrap;
+}

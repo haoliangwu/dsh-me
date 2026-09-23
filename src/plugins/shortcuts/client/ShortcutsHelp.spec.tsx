@@ -39,18 +39,21 @@ describe('ShortcutsHelp', () => {
     const view = render(<ShortcutsHelp {...propsFor(true, { sidebar: '⌘B', rightbar: '⌘I', help: '⇧?' }, zh)} />)
     expect(view.getByText('键盘快捷键')).toBeDefined()
     expect(view.getByText('收起/展开侧边栏')).toBeDefined()
-    expect(view.getByText('⌘B')).toBeDefined()
+    expect(view.getAllByText('⌘')).toHaveLength(2)
+    expect(view.getByText('B')).toBeDefined()
     expect(view.getByText('开/关右面板')).toBeDefined()
-    expect(view.getByText('⌘I')).toBeDefined()
+    expect(view.getByText('I')).toBeDefined()
     expect(view.getByText('打开帮助浮层')).toBeDefined()
-    expect(view.getByText('⇧?')).toBeDefined()
+    expect(view.getByText('⇧')).toBeDefined()
+    expect(view.getByText('?')).toBeDefined()
   })
 
   it('renders the English copy with an English locale prop', () => {
     const view = render(<ShortcutsHelp {...propsFor(true, { sidebar: 'Ctrl+B', rightbar: 'Ctrl+I', help: '?' }, en)} />)
     expect(view.getByText('Keyboard shortcuts')).toBeDefined()
     expect(view.getByText('Toggle sidebar')).toBeDefined()
-    expect(view.getByText('Ctrl+B')).toBeDefined()
+    expect(view.getAllByText('Ctrl')).toHaveLength(2)
+    expect(view.getByText('B')).toBeDefined()
   })
 
   it('renders the rebinding hint as the modal description', () => {

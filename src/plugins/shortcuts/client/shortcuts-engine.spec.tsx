@@ -149,6 +149,29 @@ describe('apply', () => {
     }
   })
 
+  it('guard: Shift-only binding (Shift+?) skips while an input holds focus — typing ? must not open the help overlay', async () => {
+    const { fiber, slots } = await fullBench(DEFAULTS, 'mac')
+    const overlay = slots.byName('shell.overlay')[0] as FakeEntry | undefined
+    if (overlay === undefined) throw new Error('overlay entry missing')
+    const injected = overlay.inject() as { hooks: { open: { getSnapshot(): boolean } } }
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
+    try {
+      keydown({ key: '?', shiftKey: true })
+      expect(injected.hooks.open.getSnapshot()).toBe(false)
+      // The fullwidth CJK form types text too — guarded the same way.
+      keydown({ key: '？', shiftKey: true })
+      expect(injected.hooks.open.getSnapshot()).toBe(false)
+      input.blur()
+      keydown({ key: '?', shiftKey: true })
+      expect(injected.hooks.open.getSnapshot()).toBe(true)
+    } finally {
+      input.remove()
+      await fiber.dispose()
+    }
+  })
+
   it('IME (WebKit ordering): compositionend then an immediate keydown is suppressed; the next keydown fires', async () => {
     const { fiber, actions } = await fullBench(DEFAULTS, 'mac')
     try {

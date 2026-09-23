@@ -22,10 +22,13 @@
  *     consumes it (help overlay open) we preventDefault + stopPropagation in
  *     the capture phase so our Escape wins over sibling document handlers
  *     (US-8). IME-guarded like everything else.
- *  3. Binding match — exact modifier set via the pure matcher. A single-key
- *     binding (no modifiers) skips while an editable element holds focus
- *     (US-5: 打字时 `/` 不触发); modifier combos fire regardless (policy B,
- *     VS Code-like — the composer holds focus most of the time, US-7).
+ *  3. Binding match — exact modifier set via the pure matcher. A textual
+ *     binding — no meta/ctrl/alt/cmdOrCtrl modifier, i.e. a bare key or a
+ *     Shift-only combo — skips while an editable element holds focus (US-5:
+ *     打字时 `/` 不触发; typing `?` must not open the help overlay either,
+ *     since Shift+? produces a printable character); modifier combos fire
+ *     regardless (policy B, VS Code-like — the composer holds focus most of
+ *     the time, US-7).
  *
  * Dispatch: on a match we preventDefault + stopPropagation (capture listener,
  * capture flag) so the browser action neither fires nor leaks to other
@@ -132,9 +135,11 @@ export class ShortcutEngine {
     // Guard 3 — binding match with the exact modifier set (pure matcher).
     for (const [action, parsed] of Object.entries(this.bindings) as Array<[ActionId, ParsedBinding]>) {
       if (!matchesBinding(parsed, ev, this.deps.platform)) continue
-      // Single-key bindings must not fire while typing into an editable target
-      // (US-5). Modifier combos bypass the focus guard entirely (policy B).
-      if (this.isSingleKey(parsed) && this.isEditableTarget(ev)) continue
+      // Textual bindings (bare keys and Shift-only combos produce printable
+      // characters) must not fire while typing into an editable target (US-5,
+      // and typing `?` must not open the help overlay). Modifier combos
+      // bypass the focus guard entirely (policy B).
+      if (this.isTextualBinding(parsed) && this.isEditableTarget(ev)) continue
       ev.preventDefault()
       ev.stopPropagation()
       this.deps.onAction(action, ev)
@@ -142,9 +147,13 @@ export class ShortcutEngine {
     }
   }
 
-  /** A binding with no modifiers at all is a single-key (and therefore guarded) binding. */
-  private isSingleKey(parsed: ParsedBinding): boolean {
-    return !parsed.meta && !parsed.ctrl && !parsed.shift && !parsed.alt && !parsed.cmdOrCtrl
+  /**
+   * A binding with no meta/ctrl/alt/cmdOrCtrl modifier is a textual binding
+   * (a bare key or a Shift-only combo): it types a printable character, so it
+   * is guarded against editable targets.
+   */
+  private isTextualBinding(parsed: ParsedBinding): boolean {
+    return !parsed.meta && !parsed.ctrl && !parsed.alt && !parsed.cmdOrCtrl
   }
 
   /**
