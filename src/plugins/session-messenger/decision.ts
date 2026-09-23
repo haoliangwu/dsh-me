@@ -43,9 +43,10 @@ export function resolveTarget(
   const byTitle = candidates.filter(candidate => candidate.title === to)
   if (byTitle.length === 0) return { kind: 'not-found' }
   if (byTitle.length === 1) {
-    return byTitle[0]?.sessionId === self.sessionId
+    const match = byTitle[0] as TargetLike
+    return match.sessionId === self.sessionId
       ? { kind: 'self' }
-      : { kind: 'target', targetId: byTitle[0]?.sessionId as string }
+      : { kind: 'target', targetId: match.sessionId }
   }
   return { kind: 'ambiguous', candidates: byTitle }
 }
@@ -91,15 +92,8 @@ export function nextHop(sourceHop: number | undefined, maxHops: number): number 
 }
 
 /**
- * Deliverable message body: the sourced header line 「来自会话 <title>」 plus
- * the caller's text (spec), falling back to the session id when the sender
- * has no title yet.
- * @param senderTitle - the calling session's title (if any).
- * @param senderSessionId - the calling session's id.
- * @param text - the tool's message text.
- * @returns the full user-message text.
+ * One relay-candidate session as the catalog needs it (structural).
  */
-/** One relay-candidate session as the catalog needs it (structural). */
 export interface CatalogCandidateLike {
   readonly id: string
   readonly header: { readonly cwd?: string }
@@ -150,6 +144,15 @@ export function deliveryCatalog(entries: readonly CatalogSessionEntry[]): readon
   }))
 }
 
+/**
+ * Deliverable message body: the sourced header line 「来自会话 <title>」 plus
+ * the caller's text (spec), falling back to the session id when the sender
+ * has no title yet.
+ * @param senderTitle - the calling session's title (if any).
+ * @param senderSessionId - the calling session's id.
+ * @param text - the tool's message text.
+ * @returns the full user-message text.
+ */
 export function relayBody(senderTitle: string | undefined, senderSessionId: string, text: string): string {
   return `来自会话 ${senderTitle ?? senderSessionId}\n\n${text}`
 }
@@ -302,9 +305,8 @@ export function replyBody(
 ): string {
   const header = `来自 ${targetTitle ?? targetSessionId} 的回复（turn ${turn}）`
   const note = truncated ? REPLY_TRUNCATION_NOTE : ''
-  return content.length === 0
-    ? (note.length === 0 ? header : `${header}\n\n${note}`)
-    : `${header}\n\n${content}${note.length === 0 ? '' : ` ${note}`}`
+  if (content.length === 0) return note === '' ? header : `${header}\n\n${note}`
+  return note === '' ? `${header}\n\n${content}` : `${header}\n\n${content} ${note}`
 }
 
 /** Reply routing decision input (per ended relay turn). */
