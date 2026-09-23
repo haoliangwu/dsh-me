@@ -5,10 +5,11 @@
  * its own list entry (`id: 'undo-redo'`, order right after the undo entry) in
  * the SAME `conversation.chat.assistant-actions` list slot the undo button
  * rides — the actions strip lives in the turn-tail row (`data-turn-tail`),
- * which the row hider never hides (`9:turn-tail` prefix excluded), so the
- * redo entry fills exactly the spot the undo button vacates once the turn is
- * undone. Click rides the injected redo verb; the host re-validates the
- * tombstone is still the surface tail.
+ * which the row hider keeps visible while its turn is undone (the `9:turn-tail`
+ * key only reaches the hider once the turn is redone and the tail is an
+ * orphan), so the redo entry fills exactly the spot the undo button vacates
+ * once the turn is undone. Click rides the injected redo verb; the host
+ * re-validates the tombstone is still the surface tail.
  */
 import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import { RedoArrow } from './icons.tsx'

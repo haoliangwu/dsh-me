@@ -21,6 +21,8 @@ function baseState(overrides: Partial<UndoState> = {}): UndoState {
     idle: true,
     undoneTurns: new Map(),
     hiddenKeys: new Set(),
+    hiddenTails: new Set(),
+    hiddenProcessRows: new Set(),
     messageTurn: new Map([['a2', 2]]),
     userTextByTurn: new Map([[2, 'second']]),
     ...overrides,

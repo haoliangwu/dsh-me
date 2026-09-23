@@ -322,8 +322,11 @@ export interface RedoLogStep {
 /**
  * Build the redo replay plan (design §2.2): the shadowed turn's events, in
  * log order, renumbered to the fake turn `F = FAKE_TURN_BASE + turn`, with
- * boundaries synthesized and the four message/tool kinds copied. Log-only
- * events with no replay role (request/header, attempts, context) are skipped.
+ * boundaries synthesized and the four message/tool kinds copied — but only
+ * append-origin surface messages: replacement events inside the turn's log
+ * range (foreign rewrites of earlier rows) are skipped, never re-appended.
+ * Log-only events with no replay role (request/header, attempts, context) are
+ * skipped too.
  * @param events - the session's event log.
  * @param tombstone - the tombstone facts from {@link findLastUndoTombstone}.
  * @returns the ordered append steps; throws when the tombstone's turn has no closed log range.
@@ -363,9 +366,23 @@ export function buildRedoAppendPlan(
         plan.push({ type: 'turn/end', data: { turn: fakeTurn, reason: { kind: 'completed' } } })
         break
       case 'user/message':
+        // Append-only replay guard (design §2.2): the turn's log range can
+        // contain OTHER rows rewritten by replacement events — magic-context
+        // refreshes, tool-result rewrites, ... A replacement inside the range
+        // is a rewrite of an EARLIER surface row (positionally outside the
+        // tombstone's trailing run by design, `trailingTurnRun`), so it stays
+        // unshadowed and visible; re-appending it as a fresh tail row would
+        // duplicate the content and break wire isomorphism (verified live,
+        // 2026-09-23: a stray tool result + context copy per redo round).
+        // Known accepted edge: a turn's own row that was REPLACED mid-turn
+        // restores its pre-replacement append version on redo.
+        if (!isAppendSurfaceEvent(event)) break
         plan.push({ type: 'user/message', data: replayUserMessage(event.data), surfaceOp: 'append' })
         break
       case 'assistant/message':
+        // Append-only replay guard — replacement assistant rewrites (e.g.
+        // compacted/refreshed copies) are not tail re-appends either.
+        if (!isAppendSurfaceEvent(event)) break
         plan.push({ type: 'assistant/message', data: replayAssistantMessage(event.data, fakeTurn, freshCallId), surfaceOp: 'append' })
         break
       case 'tool/call':
@@ -386,6 +403,9 @@ export function buildRedoAppendPlan(
         })
         break
       case 'tool/result':
+        // Append-only replay guard — a replaced tool result inside the range
+        // is a rewrite of an earlier row, not a fresh tail append.
+        if (!isAppendSurfaceEvent(event)) break
         plan.push({ type: 'tool/result', data: replayToolResult(event.data, fakeTurn, freshCallId), surfaceOp: 'append' })
         break
       default:

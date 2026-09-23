@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest'
+import { apply as applyClient } from './index.ts'
 import { RowHider, UndoSurface, type SessionEventWindowShape, type UndoSurfaceDeps } from './undo-engine.ts'
 import { nodeKey, type SessionEventLikeEntryShape } from './undo-state.ts'
 
@@ -75,6 +76,21 @@ describe('UndoSurface', () => {
     expect(onState).toHaveBeenCalledTimes(1)
     expect([...surface.getSnapshot().undoneTurns.keys()]).toEqual([2])
     expect(surface.getSnapshot().hiddenKeys.has(nodeKey('assistant-step', '2:0'))).toBe(true)
+    surface.dispose()
+  })
+
+  it('exposes the redone-orphan turn tail in the derived state', () => {
+    const window = fakeWindow([
+      ...twoTurnLog(),
+      tombstone(9, 2, [6, 7]),
+      entry(10, 'turn/start', { turn: 1_000_002 }),
+      entry(11, 'user/message', { id: 'u2-copy', role: 'user', content: [{ type: 'text', text: 'second' }], source: { kind: 'user' } }, 'append'),
+      entry(12, 'assistant/message', { turn: 1_000_002, step: 0, message: { id: 'a2-copy' } }, 'append'),
+      entry(13, 'turn/end', { turn: 1_000_002 }),
+    ])
+    const { surface } = surfaceDeps(window)
+    expect(surface.getSnapshot().hiddenTails.has(nodeKey('turn-tail', '2'))).toBe(true)
+    expect(surface.getSnapshot().hiddenTails.has(nodeKey('turn-tail', '1000002'))).toBe(false)
     surface.dispose()
   })
 
@@ -179,6 +195,97 @@ describe('UndoSurface', () => {
   })
 })
 
+describe('client apply() cold-load wiring', () => {
+  /** Boot the client plugin against a stubbed ctx and a pre-populated window. */
+  function bootClient(initial: readonly SessionEventLikeEntryShape[]) {
+    const window = fakeWindow(initial)
+    const registrations: Array<{ inject(sessionId: string): { hooks: { undo: UndoSurface } } }> = []
+    const ctx = {
+      effect: (fn: () => unknown) => { fn() },
+      locale: { register: () => {} },
+      connection: { rpc: { call: async () => ({ ok: true }) } },
+      slots: {
+        inject: (_slot: string, factory: () => unknown) => { factory() },
+        register: (config: { inject(sessionId: string): { hooks: { undo: UndoSurface } } }) => {
+          registrations.push(config)
+          return config
+        },
+      },
+      sessions: {
+        binding: () => ({
+          sessionId: 's1',
+          ctx: { get: () => undefined },
+          eventSource: window.source,
+        }),
+      },
+    }
+    applyClient(ctx as unknown as Parameters<typeof applyClient>[0])
+    return { window, registrations }
+  }
+
+  it('hides rows when the surface is constructed with a fully populated window (no notification)', () => {
+    // Cold-load regression: the event window is complete BEFORE the slot
+    // injects the surface, so the subscription never fires — the initial
+    // snapshot must still reach the row hider immediately.
+    const container = document.createElement('div')
+    container.dataset.chatFlow = ''
+    const rowOf = (key: string) => {
+      const el = document.createElement('div')
+      el.dataset.chatFlowKey = key
+      container.appendChild(el)
+      return el
+    }
+    const shadowedAssistant = rowOf(nodeKey('assistant-step', '2:0'))
+    const shadowedUser = rowOf(nodeKey('input-message', 'u2'))
+    const pill = rowOf(nodeKey('turn-process', '2'))
+    const liveUser = rowOf(nodeKey('input-message', 'u1'))
+    document.body.appendChild(container)
+    try {
+      const { registrations } = bootClient([
+        ...twoTurnLog(),
+        tombstone(9, 2, [6, 7]),
+      ])
+      // No window.replace() anywhere in this test: only the slot inject
+      // (surfaceFor) runs, and it must drive the first apply itself.
+      const wiring = registrations[0]?.inject('s1')
+      if (wiring === undefined) throw new Error('no undo slot registration')
+      expect(wiring.hooks.undo.getSnapshot().undoneTurns.has(2)).toBe(true)
+      expect(shadowedAssistant.style.display).toBe('none')
+      expect(shadowedUser.style.display).toBe('none')
+      // The tombstoned turn's tool-process pill hides with getSnapshot()'s
+      // initial derived set; a live row never in any set stays visible.
+      expect(pill.style.display).toBe('none')
+      expect(liveUser.style.display).not.toBe('none')
+    } finally {
+      document.body.removeChild(container)
+    }
+  })
+
+  it('keeps hiding shadowed rows that mount AFTER the initial apply (observer)', () => {
+    // The initial apply covers rows present at inject time; rows mounting
+    // later (React remounts, pagination) are caught by the attached
+    // MutationObserver — no window notification required. The container must
+    // stay connected until the observer microtask flushes.
+    const container = document.createElement('div')
+    container.dataset.chatFlow = ''
+    document.body.appendChild(container)
+    const { registrations } = bootClient([
+      ...twoTurnLog(),
+      tombstone(9, 2, [6, 7]),
+    ])
+    const wiring = registrations[0]?.inject('s1')
+    if (wiring === undefined) throw new Error('no undo slot registration')
+    // A shadowed row mounting after the cold-load apply.
+    const late = document.createElement('div')
+    late.dataset.chatFlowKey = nodeKey('input-message', 'u2')
+    container.appendChild(late)
+    return Promise.resolve().then(() => {
+      expect(late.style.display).toBe('none')
+      document.body.removeChild(container)
+    })
+  })
+})
+
 describe('RowHider', () => {
   function mount(keys: string[]) {
     const container = document.createElement('div')
@@ -193,18 +300,26 @@ describe('RowHider', () => {
     return { container, rows: keys.map(key => row(key)) }
   }
 
-  it('hides shadowed rows and skips turn-tail rows', () => {
+  it('hides every key in the set, turn-tail keys included', () => {
     const { container, rows } = mount([
       nodeKey('assistant-step', '2:0'),
       nodeKey('turn-tail', '2'),
       nodeKey('input-message', 'u3'),
     ])
-    const keys = new Set([nodeKey('assistant-step', '2:0')])
+    const keys = new Set([nodeKey('assistant-step', '2:0'), nodeKey('turn-tail', '2')])
     const hider = new RowHider(() => container, () => keys)
     hider.apply()
     expect(rows[0]?.style.display).toBe('none')
-    expect(rows[1]?.style.display).not.toBe('none')
+    expect(rows[1]?.style.display).toBe('none')
     expect(rows[2]?.style.display).not.toBe('none')
+    hider.dispose()
+  })
+
+  it('keeps a turn-tail row visible when its key is absent from the set', () => {
+    const { container, rows } = mount([nodeKey('turn-tail', '2')])
+    const hider = new RowHider(() => container, () => new Set<string>())
+    hider.apply()
+    expect(rows[0]?.style.display).not.toBe('none')
     hider.dispose()
   })
 

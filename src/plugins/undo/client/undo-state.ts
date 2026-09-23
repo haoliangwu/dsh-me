@@ -6,6 +6,19 @@
  * message/turn lookups — so restart and pagination are lossless and the
  * derive call is trivially testable.
  *
+ * Every tombstone keeps its original (shadowed) rows hidden — redone or not —
+ * and additionally decides its synthetic turn-tail row: an undone turn's tail
+ * stays visible (it hosts the redo entry), a redone turn's tail is an empty
+ * orphan strip and is hidden. Turn-tail seats are synthetic (anchored at
+ * turn/end seq + 0.1), never log events, so they can never sit in a tombstone's
+ * `sourceEventSeqs` — the tail decision is derived, never shadowed. A
+ * tombstoned turn's per-turn "N tool calls" disclosure pill (the
+ * `turn-process` row, keyed by the turn number, never a log event) is hidden
+ * in BOTH states: while undone its rows are shadowed, and a redone turn's
+ * live copy renders its OWN pill under the fake turn number (a different key)
+ * — the original turn's pill is stale in either case. A never-tombstoned
+ * turn's pill always stays visible.
+ *
  * No imports: the input is the structural event-window entry shape, so the
  * browser bundle stays free of the session/llm packages.
  */
@@ -22,8 +35,11 @@ const KIND_ASSISTANT_STEP = 'assistant-step'
 /** The `kind` the chat uses for tool call/result rows; keys are the callId. */
 const KIND_TOOL_CALL = 'tool-call'
 
-/** The `kind` the chat uses for turn-tail rows; never hidden (actions strip anchor). */
+/** The `kind` the chat uses for turn-tail rows; hidden only while its turn is a redone orphan. */
 const KIND_TURN_TAIL = 'turn-tail'
+
+/** The `kind` the chat uses for per-turn "N tool calls" disclosure pills; keys are `${kind.length}:${kind}${turn}`. */
+const KIND_TURN_PROCESS = 'turn-process'
 
 /** Stable collision-free node key, mirroring the conversation engine's `conversationContextKey`. */
 export function nodeKey(kind: string, id: string): string {
@@ -65,6 +81,10 @@ export interface UndoState {
   readonly undoneTurns: ReadonlyMap<number, UndoneTurnFacts>
   /** Chat node keys of every tombstone-shadowed original row (never re-shown). */
   readonly hiddenKeys: ReadonlySet<string>
+  /** Chat node keys of turn-tail rows hidden as redone orphans (design §4.2). */
+  readonly hiddenTails: ReadonlySet<string>
+  /** Chat node keys of tombstoned turns' tool-process pills, hidden in both states (design §4.2). */
+  readonly hiddenProcessRows: ReadonlySet<string>
   /** Finalized assistant message id → its turn (undo button target lookup). */
   readonly messageTurn: ReadonlyMap<string, number>
   /** Last user text per turn (composer refill after undo). */
@@ -77,6 +97,8 @@ export const EMPTY_UNDO_STATE: UndoState = {
   idle: true,
   undoneTurns: new Map(),
   hiddenKeys: new Set(),
+  hiddenTails: new Set(),
+  hiddenProcessRows: new Set(),
   messageTurn: new Map(),
   userTextByTurn: new Map(),
 }
@@ -145,6 +167,10 @@ function messageText(content: unknown): string {
  * tombstones, detect redo copies after each, and map shadowed seqs to chat
  * node keys. Original rows stay hidden for EVERY tombstone (redone or not) —
  * redo renders fresh copies and the shadowed rows must never re-appear.
+ * Turn-tail rows get the derived orphan rule below: an undone tombstone keeps
+ * its tail visible (redo anchor), a redone one hides it. Tombstoned turns'
+ * tool-process pills are hidden in both states — the live redo copy renders
+ * its own pill under the fake turn number, a different key.
  * @param entries - the session's event window entries.
  * @returns the derived undo facts.
  */
@@ -265,11 +291,36 @@ export function deriveUndoState(entries: readonly SessionEventLikeEntryShape[]):
     })
   }
 
+  // Redone-orphan turn tails: a tombstoned turn that is NOT currently undone
+  // (the same §2.3 marker rule that cleared it from `undoneTurns`) was redone,
+  // so its synthetic turn-tail row (never in any `sourceEventSeqs`) is an
+  // empty 32px strip with dead action buttons — hide it. An undone turn's
+  // tail stays visible: it hosts the redo entry. Turns without any tombstone
+  // never contribute; non-numeric tombstone turns are skipped like above.
+  const hiddenTails = new Set<string>()
+  // Tombstoned-turn process pills: the chat renders one "N tool calls"
+  // disclosure pill per turn under a `turn-process` key derived from the turn
+  // number (never a log event, never in any `sourceEventSeqs`). EVERY
+  // tombstoned turn hides its pill in both states — while undone the pill
+  // labels shadowed-away rows, and a redone turn's live copy renders its OWN
+  // pill under the fake turn number (a different key), so the original turn's
+  // pill is stale in either case. A never-tombstoned turn never contributes.
+  const hiddenProcessRows = new Set<string>()
+  for (const tombstone of tombstones) {
+    const tombstoneTurn = (tombstone.data as { turn?: unknown } | undefined)?.turn
+    const turn = typeof tombstoneTurn === 'number' ? tombstoneTurn : undefined
+    if (turn === undefined) continue
+    hiddenProcessRows.add(nodeKey(KIND_TURN_PROCESS, String(turn)))
+    if (!undoneTurns.has(turn)) hiddenTails.add(nodeKey(KIND_TURN_TAIL, String(turn)))
+  }
+
   return {
     lastTurn,
     idle,
     undoneTurns,
     hiddenKeys,
+    hiddenTails,
+    hiddenProcessRows,
     messageTurn,
     userTextByTurn,
   }

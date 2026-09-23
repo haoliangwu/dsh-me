@@ -131,8 +131,10 @@ describe('deriveUndoState', () => {
       nodeKey('tool-call', 'c1'),
       nodeKey('assistant-step', '2:0'),
     ]))
-    // The turn-tail key prefix is excluded from hiding elsewhere, but stays published.
+    // The turn-tail key prefix stays published (a helper of the type); the
+    // undone turn's own tail is NOT hidden — it hosts the redo entry.
     expect(TURN_TAIL_KEY_PREFIX).toBe('9:turn-tail')
+    expect(state.hiddenTails.size).toBe(0)
     expect(state.messageTurn.get('a2')).toBe(2)
     expect(state.userTextByTurn.get(1)).toBe('first')
     expect(state.userTextByTurn.get(2)).toBe('second')
@@ -152,6 +154,95 @@ describe('deriveUndoState', () => {
     // Original rows stay hidden even after the redo.
     expect(state.hiddenKeys.has(nodeKey('assistant-step', '2:0'))).toBe(true)
     expect(state.hiddenKeys.has(nodeKey('input-message', 'u2'))).toBe(true)
+    // The redone original turn's synthetic tail is an empty orphan strip: hidden.
+    expect(state.hiddenTails.has(nodeKey('turn-tail', String(2)))).toBe(true)
+    // The live fake turn (never tombstoned) never contributes a tail.
+    expect(state.hiddenTails.has(nodeKey('turn-tail', String(1_000_002)))).toBe(false)
+  })
+
+  it('keeps the turn-tail visible for an undone tombstone (redo anchor)', () => {
+    const log = [...twoTurnLog(), tombstone(11, 2, [6, 7, 8, 9])]
+    const state = deriveUndoState(log)
+    expect([...state.undoneTurns.keys()]).toEqual([2])
+    expect(state.hiddenTails.has(nodeKey('turn-tail', String(2)))).toBe(false)
+  })
+
+  it('tracks tail visibility across an undo→redo→undo chain', () => {
+    const log = [
+      ...twoTurnLog(),
+      tombstone(11, 2, [6, 7, 8, 9]),
+      entry({ seq: 12, type: 'turn/start', data: { turn: 1_000_002 } }),
+      user(13, 0, 'u2-copy', 'second'),
+      assistant(14, 1_000_002, 0, 'a2-copy'),
+      turnEnd(15, 1_000_002),
+      tombstone(16, 1_000_002, [13, 14]),
+    ]
+    const state = deriveUndoState(log)
+    // Original turn redone: its orphan tail is hidden.
+    expect(state.hiddenTails.has(nodeKey('turn-tail', String(2)))).toBe(true)
+    // Fake copy turn currently undone: its tail stays visible (hosts redo#2).
+    expect(state.hiddenTails.has(nodeKey('turn-tail', String(1_000_002)))).toBe(false)
+    // A never-tombstoned turn has no tail entry ever.
+    expect(state.hiddenTails.has(nodeKey('turn-tail', String(1)))).toBe(false)
+  })
+
+  it('never contributes tails for non-tombstoned turns and skips non-numeric tombstone turns', () => {
+    const noTombstone = deriveUndoState(twoTurnLog())
+    expect(noTombstone.hiddenTails.size).toBe(0)
+    // A tombstone without a numeric turn contributes a shadow to hiddenKeys
+    // but no tail (the tail would be a dead anchor with no turn identity).
+    const noTurn = [...twoTurnLog(), entry({
+      seq: 11, type: 'system/message', surfaceOp: { op: 'replace' }, sourceEventSeqs: [6, 7, 8, 9],
+      data: { message: { id: 't-n', role: 'system', content: [], source: { kind: 'plugin', plugin: 'dsh-undo' } } },
+    })]
+    const state = deriveUndoState(noTurn)
+    expect(state.hiddenKeys.has(nodeKey('assistant-step', '2:0'))).toBe(true)
+    expect(state.hiddenTails.size).toBe(0)
+    expect(state.hiddenProcessRows.size).toBe(0)
+  })
+
+  it('hides the tool-process pill of every tombstoned turn, undone or redone', () => {
+    // Undone: turn 2 is shadowed; its "N tool calls" pill key is hidden, and
+    // the untombstoned turns 1/2-like rows never contribute.
+    const undone = deriveUndoState([...twoTurnLog(), tombstone(11, 2, [6, 7, 8, 9])])
+    expect(undone.hiddenProcessRows.has(nodeKey('turn-process', '2'))).toBe(true)
+    expect(undone.hiddenProcessRows.has(nodeKey('turn-process', '1'))).toBe(false)
+    // Redone: the ORIGINAL turn's pill stays hidden while the LIVE fake copy
+    // turn (never tombstoned) keeps its own pill visible under a different
+    // key — `12:turn-process1000002`, not `12:turn-process2`.
+    const redone = deriveUndoState([
+      ...twoTurnLog(),
+      tombstone(11, 2, [6, 7, 8, 9]),
+      entry({ seq: 12, type: 'turn/start', data: { turn: 1_000_002 } }),
+      user(13, 0, 'u2-copy', 'second'),
+      assistant(14, 1_000_002, 0, 'a2-copy'),
+      turnEnd(15, 1_000_002),
+    ])
+    expect(redone.hiddenProcessRows.has(nodeKey('turn-process', '2'))).toBe(true)
+    expect(redone.hiddenProcessRows.has(nodeKey('turn-process', '1000002'))).toBe(false)
+    // No tombstone at all → no pill entries.
+    expect(deriveUndoState(twoTurnLog()).hiddenProcessRows.size).toBe(0)
+  })
+
+  it('applies the pill rule to an undo of a REDONE (fake) turn too', () => {
+    const log = [
+      ...twoTurnLog(),
+      tombstone(11, 2, [6, 7, 8, 9]),
+      entry({ seq: 12, type: 'turn/start', data: { turn: 1_000_002 } }),
+      user(13, 0, 'u2-copy', 'second'),
+      assistant(14, 1_000_002, 0, 'a2-copy'),
+      turnEnd(15, 1_000_002),
+      tombstone(16, 1_000_002, [13, 14]),
+    ]
+    const state = deriveUndoState(log)
+    // Both tombstones hide their pills; the live fake copy pill hides only
+    // once ITS turn is tombstoned in turn. The tail rule is unchanged: the
+    // fake turn is currently undone so its tail stays visible.
+    expect(state.hiddenProcessRows.has(nodeKey('turn-process', '2'))).toBe(true)
+    expect(state.hiddenProcessRows.has(nodeKey('turn-process', '1000002'))).toBe(true)
+    expect(state.hiddenProcessRows.has(nodeKey('turn-process', '1'))).toBe(false)
+    expect(state.hiddenTails.has(nodeKey('turn-tail', '2'))).toBe(true)
+    expect(state.hiddenTails.has(nodeKey('turn-tail', '1000002'))).toBe(false)
   })
 
   it('recognizes a redo via the plugin-copied user message alone', () => {

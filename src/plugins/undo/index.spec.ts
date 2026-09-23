@@ -439,6 +439,108 @@ describe('pure: redo replay plan (§2.2)', () => {
     expect(userData.id).not.toBe(ids[0]?.userMessageId)
   })
 
+  it('skips foreign replacement events inside the turn range (append-only replay guard)', () => {
+    // Live shape (2026-09-23): the turn's log range can hold OTHER rows
+    // rewritten by replacement events — a magic-context context refresh and a
+    // tool-result rewrite — spliced positionally into earlier clusters. Those
+    // are rewrites of EARLIER surface rows (unshadowed by the tombstone's
+    // trailing run), so the redo plan must not re-append them as fresh tails.
+    const session = Session.create(SessionId('pure-redo-guard-1'))
+    appendToolTurn(session, 1)
+    const beforeTurn2 = session.snapshotEvents()
+    const result1 = beforeTurn2.find((event): event is SessionEvent<'tool/result'> => event.type === 'tool/result')
+    const user1 = beforeTurn2.find((event): event is SessionEvent<'user/message'> => event.type === 'user/message')
+    if (result1 === undefined || user1 === undefined) throw new Error('missing turn-1 rows')
+    const result1Seq = result1.seq
+    const user1Seq = user1.seq
+
+    session.append('turn/start', { turn: 2 })
+    session.append('step/start', { turn: 2, step: 0 })
+    // A tool-result rewrite of turn-1's result (rewrite may change only the
+    // tool-result block's text content) — its seq now lies inside turn 2's log
+    // range.
+    const rewrittenResult = structuredClone(result1.data) as SessionEventMap['tool/result']
+    const resultBlock = rewrittenResult.message.content[0] as { content: unknown }
+    resultBlock.content = [{ type: 'text', text: 'REFRESHED' }]
+    session.append('tool/result', rewrittenResult, {
+      surfaceOp: { op: 'replace', startSeq: SessionSeq(result1Seq), endSeq: SessionSeq(result1Seq) },
+      sourceEventSeqs: [SessionSeq(result1Seq)],
+    })
+    // A magic-context refresh of turn-1's user row.
+    const refreshed = createUserMessage({
+      content: [{ type: 'text', text: 'context refreshed' }],
+      source: { kind: 'plugin', plugin: 'magic-context' },
+    })
+    session.append('user/message', refreshed, {
+      surfaceOp: { op: 'replace', startSeq: SessionSeq(user1Seq), endSeq: SessionSeq(user1Seq) },
+      sourceEventSeqs: [SessionSeq(user1Seq)],
+    })
+    // Turn 2's own content.
+    const user2 = createUserMessage({ content: [{ type: 'text', text: 'run it again' }], source: { kind: 'user' } })
+    session.append('user/message', user2, { surfaceOp: 'append' })
+    const assistant2 = createAssistantMessage({
+      content: [
+        { type: 'text', text: 'running' },
+        { type: 'tool-call', id: ToolCallId('call-2'), name: 'list_files', arguments: '{}' },
+      ],
+      source: { provider: 'deepseek-official', model: 'v4-flash' },
+    })
+    session.append('assistant/message', { turn: 2, step: 0, message: assistant2, stream: [] }, { surfaceOp: 'append' })
+    const call2 = session.append('tool/call', {
+      turn: 2,
+      step: 0,
+      callId: ToolCallId('call-2'),
+      name: 'list_files',
+      arguments: '{}',
+    })
+    const result2 = createToolResultMessage({
+      callId: ToolCallId('call-2'),
+      content: [{ type: 'text', text: 'b.txt' }],
+      isError: false,
+    })
+    session.append('tool/result', { turn: 2, step: 0, message: result2 }, { surfaceOp: 'append', sourceEventSeqs: [call2.seq] })
+    session.append('step/end', { turn: 2, step: 0 })
+    session.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+
+    // Tombstone turn 2 over its CONTIGUOUS trailing run (as performUndo does).
+    const events = session.snapshotEvents()
+    const range2 = turnLogRange(events, 2)
+    if (range2 === undefined) throw new Error('no turn-2 range')
+    const turn2Seqs = new Set(shadowedTurnNodes([...session.surface.nodes], range2))
+    const run = trailingTurnRun([...session.surface.nodes], turn2Seqs)
+    const append = buildTombstoneAppend({
+      turn: 2,
+      step: lastStepOfTurn(events, 2),
+      startSeq: run[0] as number,
+      endSeq: run.at(-1) as number,
+      shadowedSeqs: run,
+    })
+    session.append('system/message', append.data, {
+      surfaceOp: { op: 'replace', startSeq: SessionSeq(append.surfaceOp.startSeq), endSeq: SessionSeq(append.surfaceOp.endSeq) },
+      sourceEventSeqs: append.sourceEventSeqs.map(SessionSeq),
+    })
+    const tombstone = findLastUndoTombstone(session.snapshotEvents())
+    if (tombstone === undefined) throw new Error('no tombstone')
+    const plan = buildRedoAppendPlan(session.snapshotEvents(), tombstone)
+    // Exactly the turn's OWN rows replay: the two replacement events inside
+    // the log range produce no steps.
+    expect(plan.map(step => step.type)).toEqual([
+      'turn/start', 'step/start', 'user/message', 'assistant/message',
+      'tool/call', 'tool/result', 'step/end', 'turn/end',
+    ])
+    const userStep = plan.find(step => step.type === 'user/message')
+    const resultStep = plan.find(step => step.type === 'tool/result')
+    if (userStep === undefined || userStep.type !== 'user/message'
+      || resultStep === undefined || resultStep.type !== 'tool/result') throw new Error('missing replay steps')
+    const userData = userStep.data as SessionEventMap['user/message']
+    const resultData = resultStep.data as SessionEventMap['tool/result']
+    // The replayed user message is a fresh copy of turn-2's OWN input (not the
+    // magic-context refresh), and the replayed result is a fresh copy of
+    // turn-2's OWN result (not the turn-1 rewrite).
+    expect(userData.id).not.toBe(refreshed.id)
+    expect(resultData.message.id).not.toBe(rewrittenResult.message.id)
+  })
+
   it('replays a tool turn with FRESH call ids paired across call, result, and content, turn becomes F', () => {
     const session = Session.create(SessionId('pure-redo-3'))
     session.append('system/message', {

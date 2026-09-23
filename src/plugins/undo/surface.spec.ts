@@ -18,6 +18,7 @@ import {
   SessionSeq,
   foldSurface,
   type SessionEvent,
+  type SessionEventMap,
 } from '@deepseek-ai/dsh-session'
 import {
   ToolCallId,
@@ -39,7 +40,7 @@ import {
   shadowedTurnNodes,
   turnLogRange,
 } from './pure.ts'
-import { appendRedoStep } from './index.ts'
+import { appendRedoStep, performRedo, performUndo } from './index.ts'
 
 /** One assembled session: the live Session plus its turn-1 message ids. */
 interface BuiltSession {
@@ -373,5 +374,182 @@ describe('dsh-undo spike: tool copies (§2.2.4–2.2.5)', () => {
     expect(result.data.turn).toBe(FAKE_TURN_BASE + 1)
     expect(result.data.message.source.callId).toBe(fakeCalls[0]?.data.callId)
     expect(result.data.message.content[0]?.toolCallId).toBe(fakeCalls[0]?.data.callId)
+  })
+})
+
+describe('dsh-undo spike: foreign replacement events in the turn range (§2.2 append guard)', () => {
+  /**
+   * A session whose turn-2 LOG range contains two FOREIGN replacement events:
+   * a tool/result rewrite of turn-1's result and a magic-context refresh of
+   * turn-1's context row (the verified live shape, 2026-09-23). Turn 1 carries
+   * a step-1 assistant row AFTER its result so both rewrites splice INTO turn
+   * 1's positional cluster — the tombstone's trailing run (trailingTurnRun)
+   * then shadows only turn 2's own rows and leaves the rewrites visible.
+   */
+  function buildReplacementSession(sessionId: string): {
+    session: Session
+    turn2AssistantId: string
+    replacementResultId: string
+    replacementContextId: string
+  } {
+    const session = Session.create(SessionId(sessionId))
+    // ── Turn 1: tool turn with a trailing step-1 assistant row ──────────────
+    session.append('turn/start', { turn: 1 })
+    session.append('step/start', { turn: 1, step: 0 })
+    const user1 = createUserMessage({ content: [{ type: 'text', text: 'list files' }], source: { kind: 'user' } })
+    session.append('user/message', user1, { surfaceOp: 'append' })
+    const context = createUserMessage({
+      content: [{ type: 'text', text: 'context snapshot' }],
+      source: { kind: 'plugin', plugin: 'magic-context' },
+    })
+    const contextEvent = session.append('user/message', context, { surfaceOp: 'append' })
+    const assistant1 = createAssistantMessage({
+      content: [
+        { type: 'text', text: 'listing' },
+        { type: 'tool-call', id: ToolCallId('call-1'), name: 'list_files', arguments: '{}' },
+      ],
+      source: { provider: 'deepseek-official', model: 'v4-flash' },
+    })
+    session.append('assistant/message', { turn: 1, step: 0, message: assistant1, stream: [] }, { surfaceOp: 'append' })
+    const call1 = session.append('tool/call', {
+      turn: 1,
+      step: 0,
+      callId: ToolCallId('call-1'),
+      name: 'list_files',
+      arguments: '{}',
+    })
+    const result1 = createToolResultMessage({
+      callId: ToolCallId('call-1'),
+      content: [{ type: 'text', text: 'a.txt' }],
+      isError: false,
+    })
+    session.append('tool/result', { turn: 1, step: 0, message: result1 }, { surfaceOp: 'append', sourceEventSeqs: [call1.seq] })
+    session.append('step/end', { turn: 1, step: 0 })
+    session.append('step/start', { turn: 1, step: 1 })
+    const assistant1b = createAssistantMessage({
+      content: [{ type: 'text', text: 'done' }],
+      source: { provider: 'deepseek-official', model: 'v4-flash' },
+    })
+    session.append('assistant/message', { turn: 1, step: 1, message: assistant1b, stream: [] }, { surfaceOp: 'append' })
+    session.append('step/end', { turn: 1, step: 1 })
+    session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    // ── Turn 2 opens; TWO foreign replacements land inside its log range ────
+    const eventsBefore = session.snapshotEvents()
+    const result1Event = eventsBefore.find((event): event is SessionEvent<'tool/result'> =>
+      event.type === 'tool/result')
+    if (result1Event === undefined) throw new Error('missing turn-1 tool result')
+    const contextSeq = contextEvent.seq
+    session.append('turn/start', { turn: 2 })
+    session.append('step/start', { turn: 2, step: 0 })
+    // A tool-result rewrite of turn-1's result (rewrite may change only the
+    // tool-result block's text content).
+    const rewrittenResult = structuredClone(result1Event.data) as SessionEventMap['tool/result']
+    const resultBlock = rewrittenResult.message.content[0] as { content: unknown }
+    resultBlock.content = [{ type: 'text', text: 'REFRESHED' }]
+    session.append('tool/result', rewrittenResult, {
+      surfaceOp: { op: 'replace', startSeq: SessionSeq(result1Event.seq), endSeq: SessionSeq(result1Event.seq) },
+      sourceEventSeqs: [SessionSeq(result1Event.seq)],
+    })
+    // A magic-context refresh of turn-1's context row.
+    const refreshedContext = createUserMessage({
+      content: [{ type: 'text', text: 'context refreshed' }],
+      source: { kind: 'plugin', plugin: 'magic-context' },
+    })
+    session.append('user/message', refreshedContext, {
+      surfaceOp: { op: 'replace', startSeq: SessionSeq(contextSeq), endSeq: SessionSeq(contextSeq) },
+      sourceEventSeqs: [SessionSeq(contextSeq)],
+    })
+    // ── Turn 2's own content ────────────────────────────────────────────────
+    const user2 = createUserMessage({ content: [{ type: 'text', text: 'run it again' }], source: { kind: 'user' } })
+    session.append('user/message', user2, { surfaceOp: 'append' })
+    const assistant2 = createAssistantMessage({
+      content: [
+        { type: 'text', text: 'running' },
+        { type: 'tool-call', id: ToolCallId('call-2'), name: 'list_files', arguments: '{}' },
+      ],
+      source: { provider: 'deepseek-official', model: 'v4-flash' },
+    })
+    session.append('assistant/message', { turn: 2, step: 0, message: assistant2, stream: [] }, { surfaceOp: 'append' })
+    const call2 = session.append('tool/call', {
+      turn: 2,
+      step: 0,
+      callId: ToolCallId('call-2'),
+      name: 'list_files',
+      arguments: '{}',
+    })
+    const result2 = createToolResultMessage({
+      callId: ToolCallId('call-2'),
+      content: [{ type: 'text', text: 'b.txt' }],
+      isError: false,
+    })
+    session.append('tool/result', { turn: 2, step: 0, message: result2 }, { surfaceOp: 'append', sourceEventSeqs: [call2.seq] })
+    session.append('step/end', { turn: 2, step: 0 })
+    session.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+    return {
+      session,
+      turn2AssistantId: assistant2.id,
+      replacementResultId: rewrittenResult.message.id,
+      replacementContextId: refreshedContext.id,
+    }
+  }
+
+  /** A stub host serving one live session (the endpoint shape). */
+  function hostOf(session: Session): {
+    sessions: { get(id: SessionId): Session | undefined }
+    agents: { get(id: SessionId): { id: SessionId; status: 'idle' } | undefined }
+  } {
+    return {
+      sessions: { get: id => (id === session.id ? session : undefined) },
+      agents: { get: () => ({ id: session.id, status: 'idle' as const }) },
+    }
+  }
+
+  it('builds a redo plan that excludes the foreign replacement events', async () => {
+    const { session, turn2AssistantId, replacementResultId, replacementContextId } =
+      buildReplacementSession('spike-replacement-plan')
+    const host = hostOf(session)
+    const undone = await performUndo(host, session.id, turn2AssistantId)
+    if (!undone.ok) throw new Error(`undo failed: ${undone.error.message}`)
+    const tombstone = findLastUndoTombstone(session.snapshotEvents())
+    if (tombstone === undefined) throw new Error('no tombstone')
+    const plan = buildRedoAppendPlan(session.snapshotEvents(), tombstone)
+    // Exactly the turn's OWN rows replay: the two replacement events inside
+    // the log range produce no steps (no extra user/assistant/tool-result).
+    expect(plan.map(step => step.type)).toEqual([
+      'turn/start', 'step/start', 'user/message', 'assistant/message',
+      'tool/call', 'tool/result', 'step/end', 'turn/end',
+    ])
+    const userStep = plan.find(step => step.type === 'user/message')
+    const resultStep = plan.find(step => step.type === 'tool/result')
+    if (userStep === undefined || userStep.type !== 'user/message'
+      || resultStep === undefined || resultStep.type !== 'tool/result') throw new Error('missing replay steps')
+    // The replayed user message is a fresh copy of turn-2's OWN input (not the
+    // magic-context refresh), and the replayed result is a fresh copy of
+    // turn-2's OWN result (not the turn-1 rewrite).
+    expect((userStep.data as SessionEventMap['user/message']).id).not.toBe(replacementContextId)
+    expect((resultStep.data as SessionEventMap['tool/result']).message.id).not.toBe(replacementResultId)
+  })
+
+  it('redo with foreign replacements in the turn range stays wire-isomorphic', async () => {
+    const { session, turn2AssistantId } = buildReplacementSession('spike-replacement-wire')
+    const host = hostOf(session)
+    const beforeWire = JSON.stringify(canonicalCallIds(wireOf(session.deriveMessages())))
+    const beforeContent = canonicalCallIds(contentOf(session.deriveMessages()))
+
+    const undone = await performUndo(host, session.id, turn2AssistantId)
+    if (!undone.ok) throw new Error(`undo failed: ${undone.error.message}`)
+    const afterUndoWire = JSON.stringify(canonicalCallIds(wireOf(session.deriveMessages())))
+    // The foreign rewrite rows stay visible: the tombstone shadows only turn
+    // 2's own trailing run, so the refreshed context and the replaced result
+    // survive the undo and redo must not re-append them.
+    expect(afterUndoWire).toContain('context refreshed')
+    expect(afterUndoWire).toContain('REFRESHED')
+
+    const redone = await performRedo(host, session.id)
+    if (!redone.ok) throw new Error(`redo failed: ${redone.error.message}`)
+    const after = session.deriveMessages()
+    expect(JSON.stringify(canonicalCallIds(wireOf(after)))).toBe(beforeWire)
+    expect(canonicalCallIds(contentOf(after))).toEqual(beforeContent)
+    expect(() => foldSurface(session.snapshotEvents())).not.toThrow()
   })
 })

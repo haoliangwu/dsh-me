@@ -13,11 +13,16 @@ Opencode 风格的消息撤销（rewind）与重做（redo），通过官方 sur
   被撤销的用户消息原文回填输入框（`setDraft`），可修改后重新发送。
 - **重做**：turn 尾部 actions 条（`conversation.chat.assistant-actions` slot）的
   「重做」icon 按钮，仅在对应 turn 处于已撤销（undone）态时显示——撤销后原始行被
-  隐藏，而 actions 条所在的行（`turn-tail` 行）不被隐藏引擎隐藏，重做按钮正好补位
-  撤销按钮腾出的同一位置。点击后按原 surface 顺序向日志纯 append 重放该 turn 的
+  隐藏，而 actions 条所在的行（`turn-tail` 行）在其 turn 未撤销时保持可见，重做
+  按钮正好补位撤销按钮腾出的同一位置；turn 被重做后其 tail 行成为空孤儿条，随
+  派生规则隐藏。点击后按原 surface 顺序向日志纯 append 重放该 turn 的
   全部事件（用户消息、assistant 回复、工具调用与结果，fake turn ≥ 1_000_000），
   模型上下文恢复原样，界面重新显示该轮内容，**不重新执行 LLM run**。
 - **级联撤销**：撤销最后一个 turn 后，倒数第二个 turn 成为新的尾部，可继续撤销。
+- **行隐藏**：被撤销 turn 的原始行、已 redo turn 的孤儿 tail 行、以及 tombstone 化
+  turn 的 "N tool calls" 披露 pill 行（`turn-process` key，由 turn 号派生）按派生
+  集合内联 `display:none`；redone 副本原生渲染，live 副本 turn 的 pill 在 fake
+  turn 号下保持可见。冷加载首帧即应用初始隐藏集合，无需等待事件窗变更通知。
 - 状态全部由日志事件派生：重启、刷新、翻页后撤销/重做状态保持一致。
 
 ## 交互限制

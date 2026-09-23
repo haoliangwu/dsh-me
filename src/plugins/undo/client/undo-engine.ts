@@ -3,14 +3,14 @@
  * subscription feeding the derived state, plus the undo/redo RPC verbs with
  * composer refill) and the DOM row hider (design §4.2 — inline
  * `display:none` on `[data-chat-flow-key]` rows, re-applied on React remounts
- * through a MutationObserver, never touching turn-tail rows, restored on
+ * through a MutationObserver, hiding every key the derivation provides —
+ * shadowed original rows plus redone-orphan turn-tail rows, restored on
  * dispose).
  */
 import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 import {
   deriveUndoState,
   EMPTY_UNDO_STATE,
-  TURN_TAIL_KEY_PREFIX,
   type SessionEventLikeEntryShape,
   type UndoState,
 } from './undo-state.ts'
@@ -114,9 +114,10 @@ export class UndoSurface {
 
 /**
  * The DOM row hider (design §4.2): every `[data-chat-flow-key]` row whose key
- * is currently shadowed gets inline `display:none`; turn-tail rows are never
- * hidden. React remounts drop inline styles, so a MutationObserver re-applies
- * on added/removed rows; dispose restores every row this hider hid.
+ * is in the provided set gets inline `display:none` — shadowed original rows
+ * and redone-orphan turn-tail rows alike. React remounts drop inline styles,
+ * so a MutationObserver re-applies on added/removed rows; dispose restores
+ * every row this hider hid.
  */
 export class RowHider {
   private readonly hidden = new Set<HTMLElement>()
@@ -138,7 +139,12 @@ export class RowHider {
     const hiddenKeys = this.keys()
     for (const row of root.querySelectorAll<HTMLElement>('[data-chat-flow-key]')) {
       const key = row.dataset.chatFlowKey ?? ''
-      const shouldHide = hiddenKeys.has(key) && !key.startsWith(TURN_TAIL_KEY_PREFIX)
+      // Every key in the set hides, turn-tail keys included. The set only
+      // ever holds shadowed sourceEventSeqs-derived keys (surface log seqs —
+      // turn-tail seats are synthetic, anchored at turn/end seq + 0.1, so
+      // they can never be shadowed) plus the derived redone-orphan tails, so
+      // no other path can inject a turn-tail key into it.
+      const shouldHide = hiddenKeys.has(key)
       if (shouldHide) {
         row.style.display = 'none'
         this.hidden.add(row)

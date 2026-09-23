@@ -10,7 +10,8 @@
  * key, and the component state needs no such publication). The undo button
  * shows while its turn is final/undone/idle; the paired redo entry replaces
  * it in the same strip while that turn is shadowed by a tombstone (the strip
- * lives in the turn-tail row, which the row hider never hides). Export
+ * lives in the turn-tail row, which the row hider keeps visible while the
+ * turn is undone and hides once redone). Export
  * discipline: the plugin exposes only `apply`/`inject` (and the locale key
  * type like sibling plugins).
  */
@@ -25,6 +26,7 @@ import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { RedoAction } from './RedoAction.tsx'
 import { UndoButton } from './UndoButton.tsx'
 import { CHANNEL, RowHider, UndoSurface, type UndoSurfaceDeps } from './undo-engine.ts'
+import type { UndoState } from './undo-state.ts'
 import { en, zh, type UndoKey } from './locales.ts'
 
 export type { UndoKey } from './locales.ts'
@@ -78,6 +80,15 @@ export function apply(ctx: ClientContext): void {
   )
 
   /** Union the hidden keys of every surface with undo activity. */
+  const mergedHidden = (state: UndoState): ReadonlySet<string> => {
+    if (state.hiddenTails.size === 0 && state.hiddenProcessRows.size === 0) return state.hiddenKeys
+    const merged = new Set(state.hiddenKeys)
+    for (const key of state.hiddenTails) merged.add(key)
+    for (const key of state.hiddenProcessRows) merged.add(key)
+    return merged
+  }
+
+  /** Union the hidden keys of every surface with undo activity. */
   const reapplyHidden = (): void => {
     const union = new Set<string>()
     for (const keys of hiddenKeySets.values()) for (const key of keys) union.add(key)
@@ -109,12 +120,19 @@ export function apply(ctx: ClientContext): void {
             conversation?.input?.for(binding.ctx)?.setDraft(text)
           },
           onState: state => {
-            hiddenKeySets.set(sessionId, state.hiddenKeys)
+            hiddenKeySets.set(sessionId, mergedHidden(state))
             reapplyHidden()
           },
         }
     const surface = new UndoSurface(deps)
-    hiddenKeySets.set(sessionId, surface.getSnapshot().hiddenKeys)
+    // Cold-load initial apply: on a small session the event window is fully
+    // populated before the slot injects the surface, so no window change
+    // ever fires `onState` — without this call `currentKeys` stays empty and
+    // NOTHING is hidden until the next window event (verified live, 2026-09-23:
+    // the whole redo history rendered). Rows mounting after this point are
+    // still caught by the RowHider's MutationObserver.
+    hiddenKeySets.set(sessionId, mergedHidden(surface.getSnapshot()))
+    reapplyHidden()
     surfaces.set(sessionId, surface)
     return surface
   }
