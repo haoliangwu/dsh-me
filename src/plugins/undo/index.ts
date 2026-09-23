@@ -22,7 +22,6 @@ import { Session, SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import type {
   SessionEvent,
   SessionEventMap,
-  SessionEventType,
 } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import {
@@ -153,7 +152,7 @@ export async function performUndo(host: UndoHost, sessionId: string, messageId: 
   // already-undone rejection for the just-shadowed turn.
   const nodes = [...session.surface.nodes]
   const tail = nodes.at(-1)
-  const tailEvent = tail === undefined ? undefined : (events[tail] as SessionEvent)
+  const tailEvent = tail === undefined ? undefined : events[tail]
   if (tailEvent !== undefined && isUndoTombstone(tailEvent) && (tailEvent.data as { turn?: unknown }).turn === turn) {
     return internal('dsh-undo/already-undone: the last turn is already shadowed by a dsh-undo tombstone')
   }
@@ -167,7 +166,7 @@ export async function performUndo(host: UndoHost, sessionId: string, messageId: 
   // harness's in-turn system prompt row stays visible across the undo — it is
   // request plumbing, not chat content, and redo must not duplicate it either.
   const headSeq = nodes[0]
-  if (headSeq !== undefined && (events[headSeq] as SessionEvent | undefined)?.type === 'system/message') {
+  if (headSeq !== undefined && events[headSeq]?.type === 'system/message') {
     turnSeqs.delete(headSeq)
   }
   // Positional trailing run (see trailingTurnRun): the fold splices by

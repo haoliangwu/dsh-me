@@ -171,7 +171,7 @@ export function deriveUndoState(entries: readonly SessionEventLikeEntryShape[]):
   let lastPluginUserCopySeq = -1
 
   for (const event of events) {
-    const data = event.data as { turn?: unknown; message?: unknown; id?: unknown } | undefined
+    const data = event.data as { turn?: unknown } | undefined
     if (event.type === 'turn/start' && typeof data?.turn === 'number') {
       lastTurn = data.turn
       lastTurnStartSeq = event.seq

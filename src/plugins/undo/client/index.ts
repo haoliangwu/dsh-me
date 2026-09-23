@@ -86,40 +86,34 @@ export function apply(ctx: ClientContext): void {
   }
 
   const surfaceFor = (sessionId: string): UndoSurface => {
-    let surface = surfaces.get(sessionId)
-    if (surface !== undefined) return surface
+    const cached = surfaces.get(sessionId)
+    if (cached !== undefined) return cached
     const binding = scoped.sessions.binding(sessionId)
-    if (binding === undefined) {
-      // One-off bound-only sessions (projection edges) have no live window;
-      // serve them a detached surface so the slot still renders.
-      surface = new UndoSurface({
-        sessionId,
-        eventSource: { subscribe: () => () => {}, getSnapshot: () => ({ entries: [] }) },
-        callRpc: () => Promise.resolve(false),
-        setDraft: () => {},
-      })
-      surfaces.set(sessionId, surface)
-      return surface
-    }
-    const actx = binding.ctx
-    surface = new UndoSurface({
-      sessionId,
-      eventSource: binding.eventSource,
-      callRpc: async (endpoint, payload) => {
-        const result = await scoped.connection.rpc.call(CHANNEL, endpoint, payload)
-        return result.ok
-      },
-      setDraft: (text) => {
-        const conversation = actx.get('conversation') as {
-          input?: { for(actx: unknown): { setDraft(text: string): void } | undefined }
-        } | undefined
-        conversation?.input?.for(actx)?.setDraft(text)
-      },
-      onState: state => {
-        hiddenKeySets.set(sessionId, state.hiddenKeys)
-        reapplyHidden()
-      },
-    })
+    const deps: UndoSurfaceDeps = binding === undefined
+      ? {
+          // One-off bound-only sessions (projection edges) have no live window;
+          // serve them a detached surface so the slot still renders.
+          sessionId,
+          eventSource: { subscribe: () => () => {}, getSnapshot: () => ({ entries: [] }) },
+          callRpc: () => Promise.resolve(false),
+          setDraft: () => {},
+        }
+      : {
+          sessionId,
+          eventSource: binding.eventSource,
+          callRpc: async (endpoint, payload) => (await scoped.connection.rpc.call(CHANNEL, endpoint, payload)).ok,
+          setDraft: (text) => {
+            const conversation = binding.ctx.get('conversation') as {
+              input?: { for(actx: unknown): { setDraft(text: string): void } | undefined }
+            } | undefined
+            conversation?.input?.for(binding.ctx)?.setDraft(text)
+          },
+          onState: state => {
+            hiddenKeySets.set(sessionId, state.hiddenKeys)
+            reapplyHidden()
+          },
+        }
+    const surface = new UndoSurface(deps)
     hiddenKeySets.set(sessionId, surface.getSnapshot().hiddenKeys)
     surfaces.set(sessionId, surface)
     return surface

@@ -20,8 +20,6 @@ import { isAppendSurfaceEvent, isReplacementSurfaceEvent } from '@deepseek-ai/ds
 import type {
   SessionEvent,
   SessionEventMap,
-  SessionEventType,
-  SurfaceEventType,
 } from '@deepseek-ai/dsh-session'
 
 /** The plugin's canonical identity, stamped on every tombstone and copied user message. */
@@ -110,8 +108,7 @@ export function turnLogRange(
  * @returns true when `seq` is the last surface node.
  */
 export function isSurfaceTail(nodes: readonly number[], seq: number): boolean {
-  const tail = nodes.at(-1)
-  return tail !== undefined && tail === seq
+  return nodes.at(-1) === seq
 }
 
 /**
@@ -188,14 +185,9 @@ export function shadowedTurnNodes(
  * @returns the contiguous trailing run, in surface order; empty when the turn has no surface node.
  */
 export function trailingTurnRun(nodes: readonly number[], turnSeqs: ReadonlySet<number>): number[] {
-  let end = -1
-  for (let i = nodes.length - 1; i >= 0; i--) {
-    if (turnSeqs.has(nodes[i] as number)) {
-      end = i
-      break
-    }
-  }
-  if (end === -1) return []
+  let end = nodes.length - 1
+  while (end >= 0 && !turnSeqs.has(nodes[end] as number)) end--
+  if (end < 0) return []
   let start = end
   while (start > 0 && turnSeqs.has(nodes[start - 1] as number)) start--
   return nodes.slice(start, end + 1) as number[]
@@ -347,13 +339,14 @@ export function buildRedoAppendPlan(
   // tool-calls by callId and rejects a second start for the same id, while the
   // original turn's events remain in the live feed — replayed calls must not
   // reuse the original ids (design §2.2.4 amendment, 2026-09-23).
+  const turnEvents = events.slice(range.startSeq, range.endSeq + 1)
   const callIdRemap = new Map<string, string>()
-  for (const event of events.slice(range.startSeq, range.endSeq + 1)) {
+  for (const event of turnEvents) {
     if (event.type === 'tool/call') callIdRemap.set(event.data.callId, ToolCallId(randomUUID()))
   }
   const freshCallId = (id: string): string => callIdRemap.get(id) ?? id
   const plan: RedoAppendStep[] = []
-  for (const event of events.slice(range.startSeq, range.endSeq + 1)) {
+  for (const event of turnEvents) {
     switch (event.type) {
       case 'turn/start':
         plan.push({ type: 'turn/start', data: { turn: fakeTurn } })
@@ -492,6 +485,3 @@ export function findLastUndoTombstone(events: readonly SessionEvent[]): UndoTomb
   }
   return undefined
 }
-
-/** The full session event type vocabulary (exported so tests can build events). */
-export type { SessionEvent, SessionEventMap, SessionEventType, SurfaceEventType }
