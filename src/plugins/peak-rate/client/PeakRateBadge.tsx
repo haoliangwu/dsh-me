@@ -6,7 +6,8 @@
 //
 // Peak pricing follows the billing rule effective 2026-08-23: weekdays
 // (Monday–Friday) keep the configured peak windows; weekends (Saturday and
-// Sunday, Beijing time) are all-day off-peak, so the badge never shows then.
+// Sunday, Beijing time) and PRC legal holidays (host-fetched holiday-cn
+// dates, Beijing time) are all-day off-peak, so the badge never shows then.
 //
 // Match rule: provider is in the configured list (host RPC) AND the model id
 // contains "deepseek" (case-insensitive). Both conditions must hold; the
@@ -17,6 +18,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ModelDirectoryState } from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
+import { beijingDateString } from '../beijing.ts'
 import { formatWindows, isPeakRate } from './peak-rate.ts'
 import css from './PeakRateBadge.module.css'
 
@@ -26,16 +28,22 @@ const REFRESH_INTERVAL_MS = 60_000
 /** Lowercased substring a model id must contain to match the DeepSeek peak-rate policy on its own. */
 const MODEL_ID_MARKER = 'deepseek'
 
+/** Last Beijing calendar date observed by the re-evaluation interval; a change triggers one policy refresh. */
+let lastSeenBeijingDate = ''
+
 /** Validated peak-rate policy published by the host half. */
 export interface PluginConfig {
   readonly providers: readonly string[]
   readonly peakWindows: readonly (readonly [number, number])[]
   readonly multiplier: number
+  /** PRC legal-holiday dates as Beijing `YYYY-MM-DD`; empty set = no holidays (fail-open). */
+  readonly holidays: ReadonlySet<string>
 }
 
 /**
  * Reactive source for the configured peak-rate policy. Empty until the host
- * RPC settles, then published once. The badge stays hidden while the policy
+ * RPC settles, then republished on every fetch (retries included). The badge
+ * stays hidden while the policy
  * is empty (no provider match is possible and the model-id fallback has not
  * yet been counter-checked against a settled "no, the host really returned
  * nothing" state — but the model-id fallback below makes the badge
@@ -47,6 +55,8 @@ export interface ConfigSource {
   getSnapshot(): PluginConfig
   /** Subscribe to policy replacement. */
   subscribe(listener: () => void): () => void
+  /** Re-fetch the policy from the host and republish; used on a Beijing date change (e.g. New Year). */
+  refresh(): void
 }
 
 /** Injected business face plus the standard locale seat. */
@@ -71,12 +81,25 @@ export function PeakRateBadge({ directory, config, t }: PeakRateBadgeProps) {
     fn => config.subscribe(fn),
     () => config.getSnapshot(),
   )
-  const [peak, setPeak] = useState(() => isPeakRate(new Date(), policy.peakWindows))
+  const [peak, setPeak] = useState(() => isPeakRate(new Date(), policy.peakWindows, policy.holidays))
   useEffect(() => {
-    setPeak(isPeakRate(new Date(), policy.peakWindows))
-    const id = setInterval(() => { setPeak(isPeakRate(new Date(), policy.peakWindows)) }, REFRESH_INTERVAL_MS)
+    const now = new Date()
+    setPeak(isPeakRate(now, policy.peakWindows, policy.holidays))
+    lastSeenBeijingDate = beijingDateString(now)
+    const id = setInterval(() => {
+      const tick = new Date()
+      setPeak(isPeakRate(tick, policy.peakWindows, policy.holidays))
+      // A session crossing a Beijing date change (e.g. New Year) must
+      // eventually see the next calendar year's holiday data: refresh the
+      // policy once per date change.
+      const today = beijingDateString(tick)
+      if (lastSeenBeijingDate !== today) {
+        lastSeenBeijingDate = today
+        config.refresh()
+      }
+    }, REFRESH_INTERVAL_MS)
     return () => { clearInterval(id) }
-  }, [policy.peakWindows])
+  }, [policy.peakWindows, policy.holidays, config])
   if (state.current === null) return null
   const { provider, model } = state.current
   const providerMatch = policy.providers.includes(provider)

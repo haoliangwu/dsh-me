@@ -1,5 +1,4 @@
-/** Beijing timezone offset from UTC in hours (UTC+8; China observes no DST). */
-const BEIJING_OFFSET_HOURS = 8
+import { beijingDate, beijingDateString } from '../beijing.ts'
 
 /**
  * Whether a UTC moment falls in a peak-rate window.
@@ -27,20 +26,28 @@ export function isPeak(date: Date, windows: ReadonlyArray<readonly [number, numb
  * @returns true iff the moment falls on a Beijing-time Saturday or Sunday.
  */
 export function isWeekend(date: Date): boolean {
-  const beijingDay = new Date(date.getTime() + BEIJING_OFFSET_HOURS * 60 * 60 * 1000).getUTCDay()
+  const beijingDay = beijingDate(date).getUTCDay()
   return beijingDay === 0 || beijingDay === 6
 }
 
 /**
  * Whether a moment is charged at the peak rate under the current billing
  * rule: weekdays follow the configured peak windows; weekends (Beijing time)
- * are all-day off-peak per the rule change effective 2026-08-23.
+ * and PRC legal holidays are all-day off-peak per the rule change effective
+ * 2026-08-23 (legal holidays added 2026-09-23).
  * @param date - the moment to test.
  * @param windows - peak windows as `[startHour, endHour)` UTC hour pairs.
- * @returns true iff the date is a weekday inside a peak window.
+ * @param holidays - PRC legal-holiday dates as Beijing `YYYY-MM-DD`. Empty
+ *   means no holidays (the pure weekday rule, the fail-open path when the
+ *   host's holiday fetch failed).
+ * @returns true iff the date is a non-holiday weekday inside a peak window.
  */
-export function isPeakRate(date: Date, windows: ReadonlyArray<readonly [number, number]>): boolean {
-  return !isWeekend(date) && isPeak(date, windows)
+export function isPeakRate(
+  date: Date,
+  windows: ReadonlyArray<readonly [number, number]>,
+  holidays: ReadonlySet<string>,
+): boolean {
+  return !isWeekend(date) && !holidays.has(beijingDateString(date)) && isPeak(date, windows)
 }
 
 /**

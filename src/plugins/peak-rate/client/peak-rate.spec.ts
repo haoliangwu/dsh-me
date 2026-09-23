@@ -58,43 +58,70 @@ describe('isWeekend (Beijing time, UTC+8)', () => {
   })
 })
 
-describe('isPeakRate (weekday windows, weekends all-day off-peak)', () => {
+describe('isPeakRate (weekday windows; weekends and PRC legal holidays all-day off-peak)', () => {
   it('is peak on a weekday inside a window', () => {
     // Monday 2026-08-17, UTC 02:30 ∈ [1, 4).
-    expect(isPeakRate(new Date('2026-08-17T02:30:00Z'), DEFAULT_WINDOWS)).toBe(true)
+    expect(isPeakRate(new Date('2026-08-17T02:30:00Z'), DEFAULT_WINDOWS, new Set<string>())).toBe(true)
   })
 
   it('is off-peak on a weekday outside a window', () => {
-    expect(isPeakRate(new Date('2026-08-17T05:00:00Z'), DEFAULT_WINDOWS)).toBe(false)
+    expect(isPeakRate(new Date('2026-08-17T05:00:00Z'), DEFAULT_WINDOWS, new Set<string>())).toBe(false)
   })
 
   it('is off-peak on a weekend even inside a window', () => {
     // Saturday 2026-08-22, UTC 02:30 ∈ [1, 4) but weekend.
-    expect(isPeakRate(new Date('2026-08-22T02:30:00Z'), DEFAULT_WINDOWS)).toBe(false)
+    expect(isPeakRate(new Date('2026-08-22T02:30:00Z'), DEFAULT_WINDOWS, new Set<string>())).toBe(false)
   })
 
   it('is peak on a Friday morning inside a window', () => {
     // Beijing Friday 2026-08-21 10:00 = UTC 2026-08-21 02:00 ∈ [1, 4);
     // a weekday hour UTC still counts as Friday, not yet Beijing Saturday.
-    expect(isPeakRate(new Date('2026-08-21T02:00:00Z'), DEFAULT_WINDOWS)).toBe(true)
+    expect(isPeakRate(new Date('2026-08-21T02:00:00Z'), DEFAULT_WINDOWS, new Set<string>())).toBe(true)
   })
 
   it('is off-peak on a weekend regardless of windows', () => {
-    expect(isPeakRate(new Date('2026-08-22T02:30:00Z'), [[0, 24]])).toBe(false)
+    expect(isPeakRate(new Date('2026-08-22T02:30:00Z'), [[0, 24]], new Set<string>())).toBe(false)
   })
 
   it('is off-peak on a Sunday morning even inside a window', () => {
     // Beijing Sunday 2026-08-23 09:30 = UTC 2026-08-23 01:30 ∈ [1, 4).
-    expect(isPeakRate(new Date('2026-08-23T01:30:00Z'), DEFAULT_WINDOWS)).toBe(false)
+    expect(isPeakRate(new Date('2026-08-23T01:30:00Z'), DEFAULT_WINDOWS, new Set<string>())).toBe(false)
   })
 
   it('is peak on a Monday morning inside a window', () => {
     // Beijing Monday 2026-08-24 09:30 = UTC 2026-08-24 01:30 ∈ [1, 4).
-    expect(isPeakRate(new Date('2026-08-24T01:30:00Z'), DEFAULT_WINDOWS)).toBe(true)
+    expect(isPeakRate(new Date('2026-08-24T01:30:00Z'), DEFAULT_WINDOWS, new Set<string>())).toBe(true)
   })
 
   it('is always off-peak for empty windows', () => {
-    expect(isPeakRate(new Date('2026-08-17T02:00:00Z'), [])).toBe(false)
+    expect(isPeakRate(new Date('2026-08-17T02:00:00Z'), [], new Set<string>())).toBe(false)
+  })
+})
+
+describe('isPeakRate (PRC legal holidays)', () => {
+  it('is off-peak on a legal holiday inside a peak window', () => {
+    // National Day 2026-10-01 (Thursday); Beijing 10:30 = UTC 02:30 ∈ [1, 4).
+    expect(isPeakRate(new Date('2026-10-01T02:30:00Z'), DEFAULT_WINDOWS, new Set(['2026-10-01']))).toBe(false)
+  })
+
+  it('is off-peak on a legal holiday outside a peak window', () => {
+    // National Day 2026-10-01, Beijing 18:00 = UTC 10:00, outside all windows.
+    expect(isPeakRate(new Date('2026-10-01T10:00:00Z'), DEFAULT_WINDOWS, new Set(['2026-10-01']))).toBe(false)
+  })
+
+  it('is peak on a non-holiday weekday inside a window when holidays contain other dates', () => {
+    // Monday 2026-08-17 not in the holiday set.
+    expect(isPeakRate(new Date('2026-08-17T02:30:00Z'), DEFAULT_WINDOWS, new Set(['2026-10-01']))).toBe(true)
+  })
+
+  it('is off-peak on a weekend even when listed in the holiday set', () => {
+    // 2026-08-22 is already a Beijing Saturday; the weekend rule wins.
+    expect(isPeakRate(new Date('2026-08-22T02:30:00Z'), DEFAULT_WINDOWS, new Set(['2026-08-22']))).toBe(false)
+  })
+
+  it('is peak with empty holidays on a weekday inside a window (fail-open path)', () => {
+    // No holiday data (host fetch failed) → pure weekday rule, peak still applies.
+    expect(isPeakRate(new Date('2026-08-17T02:30:00Z'), DEFAULT_WINDOWS, new Set<string>())).toBe(true)
   })
 })
 
