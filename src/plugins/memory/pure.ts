@@ -1,10 +1,13 @@
 /**
  * dsh-memory pure decision core: compaction-section filtering, memory-block
- * assembly with a char budget, supersession detection, and cwd-hash workspace
- * keying. Zero I/O and zero sqlite — store rows are plain values here, so
- * vitest covers every branch without a database.
+ * assembly with a char budget, supersession detection, cwd-hash workspace
+ * keying, and the injected context-message builder. Zero I/O and zero sqlite
+ * — store rows are plain values here, so vitest covers every branch without
+ * a database.
  */
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { MessageId } from '@deepseek-ai/dsh-llm'
+import type { UserMessage } from '@deepseek-ai/dsh-llm'
 
 /** Persistent compaction sections kept at render time (spec decision: whitelist). */
 export const PERSISTENT_SECTIONS = [
@@ -14,6 +17,15 @@ export const PERSISTENT_SECTIONS = [
   'Errors and Fixes',
   'Critical Context',
 ] as const
+
+/** The plugin identity stamped on every persisted memory context row. */
+export const MEMORY_PLUGIN = 'dsh-memory'
+
+/**
+ * The one-line lead of the injected context message, before the assembled
+ * block (the block itself carries the `## Project Memory` header, spec).
+ */
+export const MEMORY_HEADER_LINE = 'Persisted cross-session memory:'
 
 /** Volatile compaction sections dropped at render time (dead-session transient state). */
 export const VOLATILE_SECTIONS = ['Pending Jobs', 'Current Work', 'Next Step'] as const
@@ -222,4 +234,47 @@ export function detectSupersession(newShadowedSeqs: readonly number[], existingR
  */
 export function cwdToWorkspaceKey(cwd: string): string {
   return createHash('sha1').update(cwd, 'utf8').digest('hex').slice(0, 16)
+}
+
+/**
+ * Full sha256 hex digest of a text. The injection change-detection key: the
+ * persisted memory row stays byte-stable while the block is unchanged, and a
+ * store write flips the digest so the next pre-step replaces the row in
+ * place (provider prefix cache stays reusable across unchanged steps).
+ * @param text - the text to hash.
+ * @returns the 64-hex sha256 digest.
+ */
+export function digestOf(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex')
+}
+
+/**
+ * Build one injected context user/message payload from the assembled block:
+ * the fixed one-line lead followed by the block, a fresh message id (a
+ * same-id second row would break the client assembler — dsh-undo's replay
+ * precedent), and a plugin source carrying the digest of the FULL message
+ * text (any byte change in the rendered row flips the digest, so the pre-step
+ * scan compares rendered bytes, not just the store blob).
+ *
+ * The source stays `kind: 'plugin'` (harness relationshipEvent admission
+ * allows plugin-kind sources with extra members — magic-context stores
+ * messageId/revision/digest the same way; only `kind: 'user'` sources are
+ * restricted to kind+rpcId+clientTimeZone, the 2026-09-23 lesson). The chat
+ * classes a plugin-source user row as a context row, not a user bubble, so
+ * the memory never masquerades as human input.
+ * @param block - the assembled memory block (`assembleMemoryBlock` output).
+ * @returns the user message payload to persist on the surface.
+ */
+export function buildMemoryMessage(block: string): UserMessage {
+  const content = `${MEMORY_HEADER_LINE}\n\n${block}`
+  return {
+    id: MessageId(randomUUID()),
+    role: 'user',
+    content: [{ type: 'text', text: content }],
+    source: {
+      kind: 'plugin',
+      plugin: MEMORY_PLUGIN,
+      digest: digestOf(content),
+    } as UserMessage['source'],
+  }
 }

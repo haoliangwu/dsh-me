@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   assembleMemoryBlock,
+  buildMemoryMessage,
   cwdToWorkspaceKey,
   detectSupersession,
+  digestOf,
   extractCheckpointSummary,
   filterSummarySections,
+  MEMORY_HEADER_LINE,
+  MEMORY_PLUGIN,
   PERSISTENT_SECTIONS,
   VOLATILE_SECTIONS,
   type MemoryBlockRow,
@@ -233,5 +237,37 @@ describe('cwdToWorkspaceKey (workspace identity)', () => {
 
   it('distinguishes different cwds', () => {
     expect(cwdToWorkspaceKey('/work/a')).not.toBe(cwdToWorkspaceKey('/work/b'))
+  })
+})
+
+describe('digestOf (injection change-detection key)', () => {
+  it('is a stable 64-hex sha256 digest', () => {
+    const digest = digestOf('some block text')
+    expect(digest).toMatch(/^[0-9a-f]{64}$/)
+    expect(digestOf('some block text')).toBe(digest)
+  })
+
+  it('flips on any byte change (a store write changes the row text → digest differs → replace)', () => {
+    expect(digestOf('fact A')).not.toBe(digestOf('fact B'))
+  })
+})
+
+describe('buildMemoryMessage (persisted context row payload)', () => {
+  it('carries the header lead, the block, plugin source, and a full-text digest', () => {
+    const message = buildMemoryMessage('## Project Memory\n<project-memory>\n<note id="1" scope="global">x</note>\n</project-memory>')
+    const text = message.content[0] as { text: string }
+    expect(message.role).toBe('user')
+    expect(message.id).toMatch(/^[0-9a-f-]{36}$/)
+    expect(text.text).toBe(`${MEMORY_HEADER_LINE}\n\n## Project Memory\n<project-memory>\n<note id="1" scope="global">x</note>\n</project-memory>`)
+    const source = message.source as { kind: string; plugin: string; digest: string }
+    expect(source.kind).toBe('plugin')
+    expect(source.plugin).toBe(MEMORY_PLUGIN)
+    expect(source.digest).toBe(digestOf(text.text))
+  })
+
+  it('gives every message a fresh id (a same-id second row would break the client assembler)', () => {
+    const first = buildMemoryMessage('block')
+    const second = buildMemoryMessage('block')
+    expect(first.id).not.toBe(second.id)
   })
 })

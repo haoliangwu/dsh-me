@@ -1,21 +1,91 @@
 /**
- * dsh-memory host tests: the entry contract (name/inject/Config), the event
- * harvest into the real sqlite store (idempotent, supersession chain, disposal
- * cleanup), the dynamic section's rendered block, and the three tools. The
- * cordis context is mocked structurally (caveman-style) while the store is a
- * real DatabaseSync under a temp DSH_HOME, so nothing touches the user's home.
+ * dsh-memory host tests: the entry contract (name/inject/Config), the pre-step
+ * injection handler (append / replace / no-op / empty-block / fault
+ * isolation), the event harvest into the real sqlite store (idempotent,
+ * supersession chain, disposal cleanup), and the three tools. The cordis
+ * context is mocked structurally while the store is a real DatabaseSync
+ * under a temp DSH_HOME, so nothing touches the user's home. The live session
+ * is a fake whose surface/node list, event log, and append spy drive the
+ * pre-step scan exactly like the harness's live Session.
  */
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { MessageId } from '@deepseek-ai/dsh-llm'
+import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { apply, Config, inject, name } from './index.ts'
+import { apply, Config, inject, name, type PreStepDecisionLike, type PreStepPayloadLike } from './index.ts'
+import { digestOf, MEMORY_HEADER_LINE } from './pure.ts'
 
-interface Session { readonly id: string; readonly header: { readonly cwd?: string } }
+/** One logged event of the fake session (the fields the scan and harvest read). */
+interface FakeEvent {
+  readonly type: string
+  readonly data?: unknown
+}
+
+/**
+ * A fake live session: seq-indexed log (`snapshotEvents`), surface nodes =
+ * every logged event, an append spy that records the payload and pushes the
+ * event (mirroring how the harness loop persists decision messages and how
+ * the replace path splices).
+ */
+interface FakeSession {
+  readonly id: string
+  readonly header: { readonly cwd: string }
+  readonly surface: { nodes: number[] }
+  events: FakeEvent[]
+  appends: Array<{ readonly type: string; readonly data: unknown; readonly opts: unknown }>
+  snapshotEvents(): readonly FakeEvent[]
+  append: (type: string, data: unknown, opts: unknown) => { seq: number }
+}
+
+/** Build a fake session with a spy append seam. */
+function fakeSession(cwd = '/work/a', id = 's1', seed: FakeEvent[] = []): FakeSession {
+  const events: FakeEvent[] = [...seed]
+  const appends: FakeSession['appends'] = []
+  const session = {
+    id,
+    header: { cwd },
+    surface: { nodes: [] as number[] },
+    events,
+    appends,
+    snapshotEvents: () => events,
+    append: (type: string, data: unknown, opts: unknown) => {
+      const seq = events.length
+      events.push({ type, data })
+      // Mirrors the fold: a tail append adds the node; every test append is a
+      // tail append, so nodes stay index == seq.
+      session.surface.nodes = events.map((_, index) => index)
+      appends.push({ type, data, opts })
+      return { seq }
+    },
+  }
+  session.surface.nodes = events.map((_, index) => index)
+  return session
+}
+
+/** One surfaced dsh-memory context row, as the harness would have persisted it. */
+function memoryRow(text: string): FakeEvent {
+  return {
+    type: 'user/message',
+    data: {
+      source: { kind: 'plugin', plugin: 'dsh-memory', digest: digestOf(text) },
+      content: [{ type: 'text', text }],
+    },
+  }
+}
+
+/** The exact rendered text of one injected memory message (header + block). */
+function messageText(block: string): string {
+  return `${MEMORY_HEADER_LINE}\n\n${block}`
+}
+
+/** Persist one injected memory message onto a fake session, like the loop's user/message append. */
+function persistMemoryRow(session: FakeSession, message: UserMessage): void {
+  session.append('user/message', message, { surfaceOp: 'append' })
+}
+
 interface CheckpointEvent { readonly seq: number; readonly time: number; readonly type: string; readonly data?: unknown; readonly sourceEventSeqs?: unknown }
-
-const SESSION: Session = { id: 's1', header: { cwd: '/work/a' } }
-const OTHER_SESSION: Session = { id: 's2', header: { cwd: '/work/a' } }
 
 const SUMMARY_TEXT = '## Primary Request and Intent\n- ship the plugin\n\n## Key Technical Concepts\n- node:sqlite\n\n## Next Step\n- drop me'
 
@@ -44,34 +114,41 @@ function summaryOnlyEvent(seq: number, shadowedSeqs: number[], summary: string):
   return { seq, time: seq * 1000, type: 'compaction/summary', data: { summary: [{ type: 'text', text: summary }], shadowedSeqs } }
 }
 
+/** The canonical downstream pre-step decision (claimed message + runtime context, before memory). */
+const CLAIMED: UserMessage = {
+  id: MessageId('u-claim'),
+  role: 'user',
+  content: [{ type: 'text', text: 'hello' }],
+  source: { kind: 'user' },
+}
+
+/** A downstream decision of the kind the harness fallback produces (`kind: 'enter'`). */
+function downstreamDecision(messages: readonly UserMessage[] = [CLAIMED]): PreStepDecisionLike {
+  return { kind: 'enter', messages: [...messages] }
+}
+
 interface Mounted {
   ctx: Record<string, unknown>
-  fire: (event: string, ...args: unknown[]) => void
-  sections: Array<{ name: string; order: number; text: (assembly: unknown) => string }>
+  fire: (event: string, ...args: unknown[]) => Promise<void> | void
   tools: Array<{ name: string; execute: (args: never, exec: never) => Promise<unknown>; output: { render: (args: never, value: never) => Array<{ type: string; text: string }> } }>
-  emits: string[]
-  render: (session?: Session) => string
-  execute: (toolName: string, args: never, exec: never) => Promise<unknown>
-  dispose: (session: Session) => void
+  executes: (toolName: string, args: unknown, exec: unknown) => Promise<unknown>
+  dispose: (session: { id: string; header: { cwd?: string } }) => void
+  prestep: (session: FakeSession, next?: () => Promise<PreStepDecisionLike>) => Promise<PreStepDecisionLike>
+  warnSpy: ReturnType<typeof vi.fn>
 }
 
 /** Boot apply over a structurally-mocked cordis context and capture every seam. */
 function mount(config: Record<string, unknown> = {}): Mounted {
-  const listeners: Record<string, Array<(...args: unknown[]) => void>> = {}
-  const sections: Mounted['sections'] = []
+  const listeners: Record<string, Array<(...args: unknown[]) => unknown>> = {}
   const tools: Mounted['tools'] = []
-  const emits: string[] = []
+  const warnSpy = vi.fn()
   const ctx = {
-    logger: { warn: vi.fn(), info: vi.fn() },
-    emit: vi.fn((event: string) => { emits.push(event) }),
-    on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+    logger: { warn: warnSpy, info: vi.fn() },
+    on: vi.fn((event: string, listener: (...args: unknown[]) => unknown) => {
       (listeners[event] ??= []).push(listener)
       return () => {}
     }),
     effect: vi.fn((fn: () => unknown) => fn()),
-    systemPrompt: {
-      section: (def: Mounted['sections'][number]) => { sections.push(def); return () => {} },
-    },
     tools: {
       register: (def: unknown) => { tools.push(def as Mounted['tools'][number]); return () => {} },
     },
@@ -79,35 +156,54 @@ function mount(config: Record<string, unknown> = {}): Mounted {
   apply(ctx as never, Config(config) as never)
   return {
     ctx,
-    fire: (event, ...args) => { for (const listener of listeners[event] ?? []) listener(...args) },
-    sections,
+    fire: (event, ...args) => {
+      const results = (listeners[event] ?? []).map(listener => listener(...args))
+      const pending = results.filter((result): result is Promise<unknown> => result instanceof Promise)
+      return pending.length > 0 ? Promise.all(pending).then(() => undefined) : undefined
+    },
     tools,
-    emits,
-    render: (session = SESSION) =>
-      sections[0]?.text({ agent: { session: { id: session.id, header: { cwd: session.header.cwd } } } }) ?? '',
-    execute: async (toolName, args, exec) => {
+    executes: async (toolName, args, exec) => {
       const tool = tools.find(candidate => candidate.name === toolName)
       if (tool === undefined) throw new Error(`tool ${toolName} not registered`)
       return tool.execute(args as never, exec as never)
     },
     dispose: (session) => { for (const listener of listeners['session/disposed'] ?? []) listener(session) },
+    prestep: (session, next = () => Promise.resolve(downstreamDecision())) =>
+      Promise.resolve((listeners['agent/pre-step']?.[0] as (payload: PreStepPayloadLike, n: () => Promise<PreStepDecisionLike>) => Promise<PreStepDecisionLike> | undefined)?.(
+        { agent: { session: session as unknown as import('./index.ts').LiveSessionLike } },
+        next,
+      ) ?? downstreamDecision()),
+    warnSpy,
   }
 }
 
-/** A caller agent for tool execution. */
-const AGENT = { id: 's1', session: SESSION }
+/** Run one pre-step and pull the injected memory message out of the decision, if any. */
+function injectedMemoryMessage(decision: PreStepDecisionLike): UserMessage | undefined {
+  if (decision.kind !== 'enter') return undefined
+  return decision.messages.find(message =>
+    (message.source as { kind?: string; plugin?: string }).kind === 'plugin'
+    && (message.source as { plugin?: string }).plugin === 'dsh-memory')
+}
+
+/** The non-memory messages of an enter decision (the downstream claim batch). */
+function downstreamMessages(decision: PreStepDecisionLike): readonly UserMessage[] {
+  if (decision.kind !== 'enter') return []
+  return decision.messages.filter(message =>
+    !((message.source as { kind?: string; plugin?: string }).kind === 'plugin'
+      && (message.source as { plugin?: string }).plugin === 'dsh-memory'))
+}
 
 describe('plugin contract', () => {
-  it('declares the id, the strict systemPrompt+tools injection, and the budget config', () => {
+  it('declares the id, the strict tools-only injection, and the budget config', () => {
     expect(name).toBe('dsh-memory')
-    expect(inject).toEqual(['systemPrompt', 'tools'])
+    expect(inject).toEqual(['tools'])
     expect(Config({})).toEqual({ maxBlockChars: 6000 })
     expect(Config({ maxBlockChars: 9000 })).toEqual({ maxBlockChars: 9000 })
     expect(() => Config({ maxBlockChars: 0 })).toThrow()
   })
 })
 
-describe('compaction harvest (session/event)', () => {
+describe('pre-step injection (agent/pre-step)', () => {
   beforeEach(() => {
     process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-memory-test-'))
   })
@@ -116,78 +212,211 @@ describe('compaction harvest (session/event)', () => {
     delete process.env.DSH_HOME
   })
 
-  it('stores a compaction checkpoint into the section render, filtered to persistent sections', () => {
+  it('appends one plugin-sourced user message with a digest on a fresh session with a non-empty block', async () => {
     const mounted = mount()
-    mounted.fire('session/event', SESSION, checkpointEvent(10, [1, 2, 3], SUMMARY_TEXT))
-    const output = mounted.render()
-    expect(output).toContain('## Project Memory')
-    expect(output).toContain('<checkpoint id="1"')
-    expect(output).toContain('- ship the plugin')
-    expect(output).not.toContain('- drop me')
+    const session = fakeSession()
+    await mounted.fire('session/event', session, checkpointEvent(10, [1, 2, 3], SUMMARY_TEXT))
+    const decision = await mounted.prestep(session)
+    const memory = injectedMemoryMessage(decision)
+    expect(memory).toBeDefined()
+    expect(memory?.role).toBe('user')
+    expect((memory?.content[0] as { text: string }).text).toContain('Persisted cross-session memory:')
+    expect((memory?.content[0] as { text: string }).text).toContain('## Project Memory')
+    expect((memory?.content[0] as { text: string }).text).toContain('- ship the plugin')
+    const source = memory?.source as { kind: string; plugin: string; digest: string }
+    expect(source.kind).toBe('plugin')
+    expect(source.plugin).toBe('dsh-memory')
+    expect(source.digest).toMatch(/^[0-9a-f]{64}$/)
+    // No in-place replace on the fresh path; the message rides the decision.
+    expect(session.appends).toEqual([])
   })
 
-  it('does not harvest a compaction/summary-shaped event without a checkpoint user/message', () => {
+  it('keeps the downstream messages (the actual user prompt) intact alongside the memory message', async () => {
     const mounted = mount()
-    mounted.fire('session/event', SESSION, summaryOnlyEvent(10, [1, 2, 3], SUMMARY_TEXT))
-    expect(mounted.render()).toBe('')
+    const session = fakeSession()
+    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    const decision = await mounted.prestep(session)
+    expect(downstreamMessages(decision)).toHaveLength(1)
+    expect(downstreamMessages(decision)[0]?.id).toBe('u-claim')
   })
 
-  it('does not harvest a user/message whose source is not a compact checkpoint', () => {
+  it('does nothing when the surfaced row carries the same digest (byte-stable no-op)', async () => {
     const mounted = mount()
-    mounted.fire('session/event', SESSION, {
+    const session = fakeSession()
+    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    const first = await mounted.prestep(session)
+    const memory = injectedMemoryMessage(first)
+    expect(memory).toBeDefined()
+    // The harness persisted the decision message as a surface row; mirror that.
+    if (memory !== undefined) persistMemoryRow(session, memory)
+    // Second pre-step with an unchanged store: the row is byte-stable, the
+    // digest matches, nothing is appended or replaced.
+    const second = await mounted.prestep(session)
+    expect(injectedMemoryMessage(second)).toBeUndefined()
+    expect(session.appends).toHaveLength(1)
+  })
+
+  it('replaces the stale row in place with the fresh content and digest, without enter messages', async () => {
+    const mounted = mount()
+    const oldBlock = '## Project Memory\n<project-memory>\n<note id="1" scope="workspace">old fact</note>\n</project-memory>'
+    const session = fakeSession('/work/a', 's1', [memoryRow(messageText(oldBlock))])
+    await mounted.executes('memory_write', { content: 'new fact' }, { agent: { id: 's1', session } })
+    const decision = await mounted.prestep(session)
+    // No enter-message injection: the replace path persists the row directly.
+    expect(injectedMemoryMessage(decision)).toBeUndefined()
+    expect(downstreamMessages(decision)).toHaveLength(1)
+    expect(session.appends).toHaveLength(1)
+    const append = session.appends[0]
+    expect(append?.type).toBe('user/message')
+    const opts = append?.opts as { surfaceOp: { op: string; startSeq: number; endSeq: number }; sourceEventSeqs: number[] }
+    expect(opts.surfaceOp).toEqual({ op: 'replace', startSeq: 0, endSeq: 0 })
+    expect(opts.sourceEventSeqs).toEqual([0])
+    const data = append?.data as UserMessage
+    expect((data.content[0] as { text: string }).text).toContain('new fact')
+    expect((data.source as unknown as { digest: string }).digest).not.toBe(digestOf(messageText(oldBlock)))
+  })
+
+  it('never injects when the assembled block is empty', async () => {
+    const mounted = mount()
+    const session = fakeSession()
+    const decision = await mounted.prestep(session)
+    expect(injectedMemoryMessage(decision)).toBeUndefined()
+    expect(session.appends).toEqual([])
+    expect(downstreamMessages(decision)).toHaveLength(1)
+  })
+
+  it('takes effect between steps: a store write after a fresh append replaces the row on the next pre-step', async () => {
+    const mounted = mount()
+    const session = fakeSession()
+    // Step 1: no row yet → the decision carries the memory message.
+    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    const first = await mounted.prestep(session)
+    const firstMemory = injectedMemoryMessage(first)
+    expect(firstMemory).toBeDefined()
+    // The harness persists decision messages as surface rows; mirror that.
+    if (firstMemory !== undefined) persistMemoryRow(session, firstMemory)
+    expect(session.appends).toHaveLength(1)
+    // Store write between steps (takes effect immediately: next pre-step).
+    await mounted.executes('memory_write', { content: 'fresh workspace fact' }, { agent: { id: 's1', session } })
+    // Step 2: the surfaced row's digest is stale → in-place replace, no new enter message.
+    const second = await mounted.prestep(session)
+    expect(injectedMemoryMessage(second)).toBeUndefined()
+    expect(session.appends).toHaveLength(2)
+    const append = session.appends[1]
+    const opts = append?.opts as { surfaceOp: { op: string; startSeq: number; endSeq: number }; sourceEventSeqs: number[] }
+    expect(opts.surfaceOp).toEqual({ op: 'replace', startSeq: 0, endSeq: 0 })
+  })
+
+  it('swallows internal handler failures: the waterfall still runs and the decision returns', async () => {
+    const mounted = mount()
+    const session = fakeSession()
+    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    // A broken log read (or a store fault — same try block) must never break the waterfall.
+    session.snapshotEvents = () => { throw new Error('log read failed') }
+    const decision = await mounted.prestep(session)
+    expect(decision).toEqual(downstreamDecision())
+    expect(injectedMemoryMessage(decision)).toBeUndefined()
+    expect(mounted.warnSpy).toHaveBeenCalledWith(expect.stringContaining('[dsh-memory] injection failed'))
+  })
+
+  it('does nothing when the session carries no cwd (nothing to scope into)', async () => {
+    const mounted = mount()
+    const noCwd = { ...fakeSession(), header: {} } as unknown as FakeSession
+    const decision = await mounted.prestep(noCwd)
+    expect(injectedMemoryMessage(decision)).toBeUndefined()
+  })
+
+  it('returns a rejected downstream decision untouched (never overrides the harness)', async () => {
+    const mounted = mount()
+    const session = fakeSession()
+    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    const decision = await mounted.prestep(session, () => Promise.resolve({ kind: 'reject' }))
+    expect(decision).toEqual({ kind: 'reject' })
+  })
+})
+
+describe('compaction harvest (session/event → next injection)', () => {
+  beforeEach(() => {
+    process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-memory-test-'))
+  })
+  afterEach(() => {
+    if (process.env.DSH_HOME !== undefined) rmSync(process.env.DSH_HOME, { recursive: true, force: true })
+    delete process.env.DSH_HOME
+  })
+
+  it('stores a compaction checkpoint into the injected block, filtered to persistent sections', async () => {
+    const mounted = mount()
+    const session = fakeSession()
+    await mounted.fire('session/event', session, checkpointEvent(10, [1, 2, 3], SUMMARY_TEXT))
+    const decision = await mounted.prestep(session)
+    const text = (injectedMemoryMessage(decision)?.content[0] as { text: string }).text
+    expect(text).toContain('## Project Memory')
+    expect(text).toContain('<checkpoint id="1"')
+    expect(text).toContain('- ship the plugin')
+    expect(text).not.toContain('- drop me')
+  })
+
+  it('does not harvest a compaction/summary-shaped event without a checkpoint user/message', async () => {
+    const mounted = mount()
+    const session = fakeSession()
+    await mounted.fire('session/event', session, summaryOnlyEvent(10, [1, 2, 3], SUMMARY_TEXT))
+    const decision = await mounted.prestep(session)
+    expect(injectedMemoryMessage(decision)).toBeUndefined()
+  })
+
+  it('does not harvest a user/message whose source is not a compact checkpoint', async () => {
+    const mounted = mount()
+    const session = fakeSession()
+    await mounted.fire('session/event', session, {
       seq: 10, time: 10_000, type: 'user/message',
       data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'plain message' }] },
     })
-    expect(mounted.render()).toBe('')
+    const decision = await mounted.prestep(session)
+    expect(injectedMemoryMessage(decision)).toBeUndefined()
   })
 
-  it('is idempotent: replaying the same event stores nothing new', () => {
+  it('is idempotent: replaying the same event stores nothing new', async () => {
     const mounted = mount()
-    mounted.fire('session/event', SESSION, checkpointEvent(10, [1, 2, 3], SUMMARY_TEXT))
-    mounted.fire('session/event', SESSION, checkpointEvent(10, [1, 2, 3], SUMMARY_TEXT))
-    const output = mounted.render()
-    expect(output.match(/<checkpoint/g)).toHaveLength(1)
+    const session = fakeSession()
+    await mounted.fire('session/event', session, checkpointEvent(10, [1, 2, 3], SUMMARY_TEXT))
+    await mounted.fire('session/event', session, checkpointEvent(10, [1, 2, 3], SUMMARY_TEXT))
+    const decision = await mounted.prestep(session)
+    const text = (injectedMemoryMessage(decision)?.content[0] as { text: string }).text
+    expect(text.match(/<checkpoint/g)).toHaveLength(1)
   })
 
-  it('marks the older checkpoint superseded when a later compaction shadows its surface seq', () => {
-    // Compaction 1 lands the checkpoint at seq 5; its surface node IS seq 5.
+  it('marks the older checkpoint superseded when a later compaction shadows its surface seq', async () => {
     const mounted = mount()
-    mounted.fire('session/event', SESSION, checkpointEvent(5, [1, 3, 2, 4], '## Primary Request and Intent\n- first checkpoint'))
-    // Compaction 2 shadows seq 5 (the checkpoint replace node) plus the interim chatter.
-    mounted.fire('session/event', SESSION, checkpointEvent(9, [5, 8, 6, 7, 5], '## Primary Request and Intent\n- consolidated checkpoint'))
-    const output = mounted.render()
-    expect(output).toContain('- consolidated checkpoint')
-    expect(output).not.toContain('- first checkpoint')
-    expect(output.match(/<checkpoint/g)).toHaveLength(1)
+    const session = fakeSession()
+    await mounted.fire('session/event', session, checkpointEvent(5, [1, 3, 2, 4], '## Primary Request and Intent\n- first checkpoint'))
+    await mounted.fire('session/event', session, checkpointEvent(9, [5, 8, 6, 7, 5], '## Primary Request and Intent\n- consolidated checkpoint'))
+    const decision = await mounted.prestep(session)
+    const text = (injectedMemoryMessage(decision)?.content[0] as { text: string }).text
+    expect(text).toContain('- consolidated checkpoint')
+    expect(text).not.toContain('- first checkpoint')
+    expect(text.match(/<checkpoint/g)).toHaveLength(1)
   })
 
-  it('keeps checkpoints of sibling sessions in the same workspace visible', () => {
+  it('keeps checkpoints of sibling sessions in the same workspace visible', async () => {
     const mounted = mount()
-    mounted.fire('session/event', OTHER_SESSION, checkpointEvent(10, [1], SUMMARY_TEXT))
-    expect(mounted.render(OTHER_SESSION)).toContain('- ship the plugin')
-    expect(mounted.render()).toContain('- ship the plugin')
+    const other = fakeSession('/work/a', 's2')
+    const session = fakeSession('/work/a', 's1')
+    await mounted.fire('session/event', other, checkpointEvent(10, [1], SUMMARY_TEXT))
+    const decision = await mounted.prestep(session)
+    const text = (injectedMemoryMessage(decision)?.content[0] as { text: string }).text
+    expect(text).toContain('- ship the plugin')
   })
 
-  it('renders nothing for an empty store and without a cwd', () => {
-    const mounted = mount()
-    expect(mounted.render()).toBe('')
-    expect(mounted.sections[0]?.text({ agent: { session: { id: 'x' } } })).toBe('')
-  })
-
-  it('applies the configured char budget to the injected block', () => {
+  it('applies the configured char budget to the injected block', async () => {
     const mounted = mount({ maxBlockChars: 400 })
-    mounted.fire('session/event', SESSION, checkpointEvent(10, [1], SUMMARY_TEXT))
-    mounted.fire('session/event', SESSION, checkpointEvent(20, [11], '## Primary Request and Intent\n- newer checkpoint content'))
-    const output = mounted.render()
-    expect(output).toContain('- newer checkpoint content')
-    expect(output).not.toContain('- ship the plugin')
-    expect(output).toContain('(1 older memories omitted)')
-  })
-
-  it('emits system-prompt/change after a harvest', () => {
-    const mounted = mount()
-    mounted.fire('session/event', SESSION, checkpointEvent(10, [1], SUMMARY_TEXT))
-    expect(mounted.emits).toContain('system-prompt/change')
+    const session = fakeSession()
+    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    await mounted.fire('session/event', session, checkpointEvent(20, [11], '## Primary Request and Intent\n- newer checkpoint content'))
+    const decision = await mounted.prestep(session)
+    const text = (injectedMemoryMessage(decision)?.content[0] as { text: string }).text
+    expect(text).toContain('- newer checkpoint content')
+    expect(text).not.toContain('- ship the plugin')
+    expect(text).toContain('(1 older memories omitted)')
   })
 })
 
@@ -202,13 +431,16 @@ describe('session disposal cleanup', () => {
 
   it('drops that session\'s notes but keeps its workspace checkpoints', async () => {
     const mounted = mount()
-    mounted.fire('session/event', SESSION, checkpointEvent(10, [1], SUMMARY_TEXT))
-    await mounted.execute('memory_write', { content: 'a session note', scope: 'session' }, { agent: AGENT })
-    expect(mounted.render()).toContain('a session note')
-    mounted.dispose(SESSION)
-    const output = mounted.render()
-    expect(output).not.toContain('a session note')
-    expect(output).toContain('- ship the plugin')
+    const session = fakeSession('/work/a', 's1')
+    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    await mounted.executes('memory_write', { content: 'a session note', scope: 'session' }, { agent: { id: 's1', session } })
+    const decision = await mounted.prestep(session)
+    expect((injectedMemoryMessage(decision)?.content[0] as { text: string }).text).toContain('a session note')
+    mounted.dispose(session)
+    const after = await mounted.prestep(session)
+    const text = (injectedMemoryMessage(after)?.content[0] as { text: string }).text
+    expect(text).not.toContain('a session note')
+    expect(text).toContain('- ship the plugin')
   })
 })
 
@@ -226,77 +458,94 @@ describe('tools', () => {
     expect(mounted.tools.map(tool => tool.name)).toEqual(['memory_write', 'memory_list', 'memory_forget'])
   })
 
-  it('memory_write stores a note visible on the next assembly render', async () => {
+  it('memory_write stores a note visible on the next pre-step injection', async () => {
     const mounted = mount()
-    const written = await mounted.execute('memory_write', { content: 'user prefers terse replies', scope: 'global' }, { agent: AGENT })
+    const session = fakeSession()
+    const written = await mounted.executes('memory_write', { content: 'user prefers terse replies', scope: 'global' }, { agent: { id: 's1', session } })
     expect(written).toEqual({ id: 1, scope: 'global' })
-    const output = mounted.render()
-    expect(output).toContain('<note id="1" scope="global">user prefers terse replies</note>')
-    expect(mounted.emits).toContain('system-prompt/change')
+    const decision = await mounted.prestep(session)
+    const text = (injectedMemoryMessage(decision)?.content[0] as { text: string }).text
+    expect(text).toContain('<note id="1" scope="global">user prefers terse replies</note>')
   })
 
   it('memory_write defaults to the workspace scope and rejects empty content', async () => {
     const mounted = mount()
-    const written = await mounted.execute('memory_write', { content: 'workspace fact' }, { agent: AGENT })
+    const session = fakeSession()
+    const written = await mounted.executes('memory_write', { content: 'workspace fact' }, { agent: { id: 's1', session } })
     expect(written).toEqual({ id: 1, scope: 'workspace' })
-    await expect(mounted.execute('memory_write', { content: '   ' }, { agent: AGENT })).rejects.toThrow()
+    await expect(mounted.executes('memory_write', { content: '   ' }, { agent: { id: 's1', session } })).rejects.toThrow()
   })
 
   it('memory_write session scope fails loudly without session context', async () => {
     const mounted = mount()
-    await expect(mounted.execute('memory_write', { content: 'orphan note', scope: 'session' }, { agent: undefined }))
+    await expect(mounted.executes('memory_write', { content: 'orphan note', scope: 'session' }, { agent: undefined }))
       .rejects.toThrow(/session context/)
   })
 
   it('memory_write workspace scope fails loudly when the session has no cwd (never stores as global)', async () => {
     const mounted = mount()
     const agent = { id: 'a1', session: { id: 's1' } } // no header.cwd
-    await expect(mounted.execute('memory_write', { content: 'no cwd note' }, { agent }))
+    await expect(mounted.executes('memory_write', { content: 'no cwd note' }, { agent }))
       .rejects.toThrow(/workspace scope needs the session cwd/)
-    const listed = await mounted.execute('memory_list', {}, { agent: AGENT })
+    const listed = await mounted.executes('memory_list', {}, { agent: { id: 's1', session: fakeSession() } })
     expect((listed as { memories: unknown[] }).memories).toEqual([])
   })
 
   it('memory_write session note binds to the session id (agent.id may differ): injected and cleaned by that session', async () => {
     const mounted = mount()
+    const session = fakeSession('/work/a', 's1')
+    const other = fakeSession('/work/a', 's2')
+    // A global row keeps the sibling's block non-empty (proving the session
+    // note itself is excluded, not the whole injection).
+    await mounted.executes('memory_write', { content: 'global fact', scope: 'global' }, { agent: { id: 's1', session } })
     // dsh rebuilds agents on resume/compact: agent.id differs from session.id.
-    const rebuilt = { id: 'rebuilt-agent-42', session: SESSION }
-    const written = await mounted.execute('memory_write', { content: 'session-bound note', scope: 'session' }, { agent: rebuilt })
-    expect(written).toEqual({ id: 1, scope: 'session' })
-    expect(mounted.render()).toContain('<note id="1" scope="session">session-bound note</note>')
-    expect(mounted.render(OTHER_SESSION)).not.toContain('session-bound note')
-    mounted.dispose(SESSION)
-    expect(mounted.render()).not.toContain('session-bound note')
+    const rebuilt = { id: 'rebuilt-agent-42', session }
+    const written = await mounted.executes('memory_write', { content: 'session-bound note', scope: 'session' }, { agent: rebuilt })
+    expect(written).toEqual({ id: 2, scope: 'session' })
+    const decision = await mounted.prestep(session)
+    expect((injectedMemoryMessage(decision)?.content[0] as { text: string }).text).toContain('session-bound note')
+    const otherDecision = await mounted.prestep(other)
+    const otherText = (injectedMemoryMessage(otherDecision)?.content[0] as { text: string }).text
+    expect(otherText).toContain('global fact')
+    expect(otherText).not.toContain('session-bound note')
+    mounted.dispose(session)
+    const after = await mounted.prestep(session)
+    const afterText = (injectedMemoryMessage(after)?.content[0] as { text: string }).text
+    expect(afterText).not.toContain('session-bound note')
   })
 
   it('memory_list returns previewed rows with provenance', async () => {
     const mounted = mount()
-    await mounted.execute('memory_write', { content: 'alpha fact', scope: 'workspace' }, { agent: AGENT })
-    const listed = await mounted.execute('memory_list', { keyword: 'alpha' }, { agent: AGENT })
+    const session = fakeSession()
+    await mounted.executes('memory_write', { content: 'alpha fact', scope: 'workspace' }, { agent: { id: 's1', session } })
+    const listed = await mounted.executes('memory_list', { keyword: 'alpha' }, { agent: { id: 's1', session } })
     const memories = (listed as { memories: unknown[] }).memories
     expect(memories).toHaveLength(1)
     expect(memories[0]).toMatchObject({ id: 1, scope: 'workspace', kind: 'manual', content: 'alpha fact' })
-    expect((listed as { memories: unknown[] }).memories).toHaveLength(1)
-    const none = await mounted.execute('memory_list', { keyword: 'zzz' }, { agent: AGENT })
+    const none = await mounted.executes('memory_list', { keyword: 'zzz' }, { agent: { id: 's1', session } })
     expect((none as { memories: unknown[] }).memories).toEqual([])
   })
 
-  it('memory_forget deletes by id and hides it from the render', async () => {
+  it('memory_forget deletes by id and hides it from the next injection', async () => {
     const mounted = mount()
-    const written = await mounted.execute('memory_write', { content: 'forget me', scope: 'workspace' }, { agent: AGENT })
+    const session = fakeSession()
+    const written = await mounted.executes('memory_write', { content: 'forget me', scope: 'workspace' }, { agent: { id: 's1', session } })
     const id = (written as { id: number }).id
-    expect(mounted.render()).toContain('forget me')
-    const result = await mounted.execute('memory_forget', { id }, { agent: AGENT })
+    const before = await mounted.prestep(session)
+    expect((injectedMemoryMessage(before)?.content[0] as { text: string }).text).toContain('forget me')
+    const result = await mounted.executes('memory_forget', { id }, { agent: { id: 's1', session } })
     expect(result).toEqual({ deleted: true })
-    expect(mounted.render()).not.toContain('forget me')
-    const missing = await mounted.execute('memory_forget', { id: 999 }, { agent: AGENT })
+    const after = await mounted.prestep(session)
+    expect(injectedMemoryMessage(after)).toBeUndefined()
+    const missing = await mounted.executes('memory_forget', { id: 999 }, { agent: { id: 's1', session } })
     expect(missing).toEqual({ deleted: false })
   })
 
   it('list sees harvested checkpoints once stored', async () => {
     const mounted = mount()
-    mounted.fire('session/event', SESSION, checkpointEvent(10, [1], SUMMARY_TEXT))
-    const listed = await mounted.execute('memory_list', {}, { agent: AGENT })
+    const session = fakeSession()
+    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    const listed = await mounted.executes('memory_list', {}, { agent: { id: 's1', session } })
     expect((listed as { memories: Array<{ kind: string }> }).memories[0]?.kind).toBe('compaction')
   })
 })

@@ -12,7 +12,7 @@
 |---|---|---|
 | [reference](src/plugins/reference/README.md) | `dsh-reference` | OC references 同款：设置页管理命名外部目录（本地或 Git 仓库，git 自动物化到缓存），@ 挂载落纯文本路径，引用自动进系统提示 |
 | [caveman](src/plugins/caveman/README.md) | `dsh-caveman` | `/caveman` 全局切换极简回复风格：横幅 + 按档过滤的规则集注入 system prompt，主会话与子代理全覆盖 |
-| [memory](src/plugins/memory/README.md) | `dsh-memory` | 跨会话记忆：compaction summary 自动收割进 sqlite、按持久节过滤注入 system prompt，`memory_write`/`memory_list`/`memory_forget` 主动记录 |
+| [memory](src/plugins/memory/README.md) | `dsh-memory` | 跨会话记忆：compaction summary 自动收割进 sqlite、按持久节过滤后作为持久 context 行注入（`agent/pre-step`，plugin source + digest，系统 prompt 字节恒定不杀前缀缓存），`memory_write`/`memory_list`/`memory_forget` 主动记录 |
 | [session-messenger](src/plugins/session-messenger/README.md) | `dsh-session-messenger` | 同 workspace 会话间 agent 互发消息并自动路由回信（主 agent 对等，非 subagent） |
 | [btw](src/plugins/btw/README.md) | `dsh-btw` | `/btw` 顺带一问：子 agent 全 markdown 回答、主日志零污染；`@`/`标题 ::` 可问其他会话的上下文 |
 | [notification](src/plugins/notification/README.md) | `dsh-ui-notification` | 会话完成/出错/提问时（页面后台）发桌面通知 + 双音提示 |

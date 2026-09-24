@@ -1,8 +1,10 @@
 /**
  * dsh-memory tools: `memory_write` / `memory_list` / `memory_forget` over the
  * memory store, registered through the host tool registry (defineTool DSL,
- * the session-messenger structure). Every write notifies the caller so the
- * dynamic prompt section re-renders next assembly.
+ * the session-messenger structure). A write takes effect on the next
+ * pre-step: the injection handler re-assembles the block, digests it, and
+ * replaces the persisted context row in place if it changed (no notify
+ * callback needed — injection is digest-driven, not notify-driven).
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { cwdToWorkspaceKey, scopeOfRow, type ManualScope, type MemoryBlockRow } from './pure.ts'
@@ -69,10 +71,9 @@ function toListEntry(row: MemoryBlockRow): ListEntry {
  * Register the three memory tools on the given registry.
  * @param ctx - the tool-registry face.
  * @param store - the memory store.
- * @param notify - callback fired after every mutation (emits `system-prompt/change`).
  * @returns the composite disposer unregistering all three tools.
  */
-export function installMemoryTools(ctx: ToolsLike, store: MemoryStore, notify: () => void): () => void {
+export function installMemoryTools(ctx: ToolsLike, store: MemoryStore): () => void {
   const disposers: Array<() => void> = []
 
   disposers.push(ctx.register(defineTool({
@@ -127,7 +128,6 @@ export function installMemoryTools(ctx: ToolsLike, store: MemoryStore, notify: (
       const workspace = scope === 'global' ? null : workspaceKeyOf(exec)
       const sessionId = scope === 'session' ? (exec.agent?.session?.id ?? null) : null
       const id = store.insertManual(scope, { content, sessionId, workspace })
-      notify()
       return { id, scope }
     },
   })))
@@ -207,7 +207,6 @@ export function installMemoryTools(ctx: ToolsLike, store: MemoryStore, notify: (
     async execute(args: { id: number }, exec: ToolExecLike) {
       exec.signal?.throwIfAborted()
       const deleted = store.deleteById(args.id) > 0
-      if (deleted) notify()
       return { deleted }
     },
   })))
