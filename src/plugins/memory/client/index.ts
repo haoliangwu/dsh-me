@@ -3,7 +3,8 @@
  * one entry of the `conversation.view` list slot (session scope, `id:
  * 'memory'`, order 20 after Chat 0 / Trajectory 10, plain label "Memory").
  * The tab follows whatever session is open (no subagent special-casing) and
- * shows the memory block injected for THAT session, rendered verbatim.
+ * shows the memory block injected for THAT session, rendered as markdown
+ * through the host's frozen MarkdownText primitive (content bytes unchanged).
  *
  * Data path: `ctx.connection.rpc.call('/dsh-memory', 'block', {sessionId,
  * cwd})` against the host half's webServer prefix route — the block is

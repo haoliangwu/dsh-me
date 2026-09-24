@@ -1,17 +1,25 @@
 /* dsh-memory Memory tab: plain inspection chrome — a captioned toolbar with
-   one manual refresh, a wrapping verbatim monospace block, and muted notices
-   for the loading / error / empty states. Host theme tokens only (light +
-   dark come for free); hashed class names keep host CSS from clashing with
-   the injected view (the dsh injected-class gotcha). */
+   one manual refresh, a markdown block on a card surface (host MarkdownText
+   primitive), and muted notices for the loading / error / empty states. Host
+   theme tokens only (light + dark come for free); hashed class names keep
+   host CSS from clashing with the injected view (the dsh injected-class
+   gotcha). */
 
 .root {
   /* Composer-overlay posture (data-conversation-composer-overlay marker on
      the root): the host no longer scrolls the view — .viewArea clips
      (overflow: hidden), the width handles are hidden entirely, and the
      composer seat parks absolute. So this root is full-bleed (width/height
-     100%) and is the tab's OWN vertical scroller; the monospace block wraps
+     100%) and is the tab's OWN vertical scroller; the markdown block wraps
      its long lines instead of scrolling horizontally. Opaque background
-     stays: full-bleed view paints its own surface. */
+     stays: full-bleed view paints its own surface.
+
+     Bottom padding reserves the floating composer: ConversationRoot's seat
+     ResizeObserver publishes the live height as --dsh-composer-height on the
+     scroll body (this root inherits it), +16px breathing gap — same calc as
+     Trajectory (views.module.css) / Chat, so content never runs under the
+     input bar. Fallback 152px covers the first paint before the observer
+     fires. */
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
@@ -19,9 +27,25 @@
   width: 100%;
   height: 100%;
   min-height: 0;
-  padding: 16px 24px 24px;
+  padding: 16px 24px calc(var(--dsh-composer-height, 152px) + 16px);
   overflow: auto;
   background-color: var(--dsw-alias-bg-base);
+}
+
+/* Content column (ChatView .column contract): everything that scrolls —
+   toolbar + notices + markdown card — is bounded to the host chat content
+   width and centered on the composer's axis. The host composer seat's top
+   36px input mask is a fade (translucent) band spanning the full view width;
+   it is only opaque under the composer card, so unbounded text in the side
+   gutters would stream past the card while scrolling. The root stays
+   full-bleed (opaque bg, own scroller) — only this column narrows. */
+.column {
+  max-width: var(--dsh-chat-content-width);
+  width: 100%;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .toolbar {
@@ -84,30 +108,22 @@
 }
 
 .block {
-  /* Own opaque surface: the monospace layer never shows host chrome through
-     its text. Explicit background, never inherited — the dsh injected-class
-     gotcha (host global CSS).
+  /* Card surface for the markdown render (MarkdownBody pattern): the
+     container owns the opaque background, border, and padding; the host
+     MarkdownText primitive inside brings its own CSS-module prose styles
+     over --dsw-* tokens. Explicit background, never inherited — the dsh
+     injected-class gotcha (host global CSS).
 
-     Wrapping posture: long lines WRAP (white-space: pre-wrap) instead of
-     scrolling horizontally. Verified on the live host: a custom
-     ::-webkit-scrollbar skin loads and scrolls, but macOS Chromium renders
-     custom-styled scrollbars as OVERLAY — the thumb paints nothing until a
-     physical gesture, so programmatic scroll + screenshot shows no bar.
-     An always-painted horizontal bar is not achievable via ::-webkit-scrollbar
-     on this platform, and mid-word clipping with zero affordance is worse
-     than reflow: this block is human inspection of the injected bytes, and
-     wrapping changes no content bytes. Keep the block's own vertical
-     overflow for tall content (overflow: auto below); horizontal needs are
-     gone with wrapping, so no scrollbar skin rules exist here anymore. */
+     Markdown reflows its own blocks (headings, lists, code fences), so long
+     lines wrap through normal prose flow — no monospace pre-wrap posture,
+     no horizontal scrolling, and the root scroller below carries all
+     vertical overflow. */
   flex: auto;
   min-height: 0;
   margin: 0;
-  padding: 14px 24px 14px 16px;
+  padding: 14px 20px;
   border: 0.5px solid var(--dsw-alias-border-l1);
   border-radius: 8px;
-  background-color: var(--dsw-alias-markdown-code-block, var(--dsw-alias-bg-subtle, #80808014));
+  background-color: var(--dsw-alias-bg-subtle);
   color: var(--dsw-alias-label-primary);
-  font: 400 12.5px/1.6 var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
-  white-space: pre-wrap;
-  overflow: auto;
 }
