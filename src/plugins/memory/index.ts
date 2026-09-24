@@ -6,8 +6,8 @@
  * the `compaction/summary` event is metadata-only and never surfaces) is
  * harvested into a local sqlite file (idempotent on the event seq,
  * workspace-keyed by the session cwd), superseded checkpoints are marked and
- * hidden, session disposal drops that session's notes, and the filtered,
- * budget-trimmed memory block is injected into every pre-step as a PERSISTED
+ * hidden, session disposal drops that session's notes, and the segmented,
+ * dual-pool-budgeted memory block is injected into every pre-step as a PERSISTED
  * context `user/message` row carrying a plugin source + digest (never a
  * dynamic systemPrompt section — the system prompt must stay byte-stable for
  * the provider prefix cache). `memory_write` / `memory_list` /
@@ -30,6 +30,8 @@ import {
   detectSupersession,
   extractCheckpointSummary,
   MEMORY_PLUGIN,
+  segmentSummary,
+  type MemoryBudgetOptions,
 } from './pure.ts'
 import { MemoryStore } from './store.ts'
 import { installMemoryTools } from './tools.ts'
@@ -46,18 +48,26 @@ export const name = MEMORY_PLUGIN
  */
 export const inject = ['tools']
 
-/** Plugin config: the single tuning knob, the injection char budget. */
+/** Plugin config: the three dual-pool/envelope knobs (spec — the old char budget is retired). */
 export interface Config {
-  /** Max characters of the injected memory block; older content is trimmed with an omitted count (default: 6000). */
-  maxBlockChars?: number
+  /** Entry cap: harvest segment split threshold + memory_write truncation threshold (default: 2500). */
+  maxEntryChars?: number
+  /** Compaction pool size: whole checkpoint groups, newest first (default: 2). */
+  maxCompactionSummaries?: number
+  /** Manual pool size: single entries, newest first across all scopes (default: 10). */
+  maxManualEntries?: number
 }
 
-export const Config = z.object({
-  maxBlockChars: z.number().step(1).min(1).default(6000),
-})
+/** Defaults when the config omits each knob. */
+export const DEFAULT_MAX_ENTRY_CHARS = 2500
+export const DEFAULT_MAX_COMPACTION_SUMMARIES = 2
+export const DEFAULT_MAX_MANUAL_ENTRIES = 10
 
-/** The default char budget when the config omits it. */
-export const DEFAULT_MAX_BLOCK_CHARS = 6000
+export const Config = z.object({
+  maxEntryChars: z.number().step(1).min(1).default(DEFAULT_MAX_ENTRY_CHARS),
+  maxCompactionSummaries: z.number().step(1).min(0).default(DEFAULT_MAX_COMPACTION_SUMMARIES),
+  maxManualEntries: z.number().step(1).min(0).default(DEFAULT_MAX_MANUAL_ENTRIES),
+})
 
 /** The store file's subdirectory below the dsh home. */
 export const MEMORY_DIR_RELATIVE = 'dsh-memory'
@@ -147,8 +157,9 @@ export function findLastMemoryRow(session: LiveSessionLike): { readonly seq: num
 
 /**
  * Decide the injection for one pre-step (pure over the live session + store):
- * assemble the block for the session's workspace, build the context message
- * with its digest, and compare against the last surfaced memory row:
+ * assemble the block for the session's workspace under the dual-pool budget,
+ * build the context message with its digest, and compare against the last
+ * surfaced memory row:
  * - no row + non-empty block → append the fresh row;
  * - row + same digest → no-op (row is byte-stable);
  * - row + differing digest + non-empty block → replace in place;
@@ -156,13 +167,13 @@ export function findLastMemoryRow(session: LiveSessionLike): { readonly seq: num
  *   documented edge, README).
  * @param store - the memory store.
  * @param session - the live session (cwd + surface + log).
- * @param maxChars - the block char budget.
+ * @param options - the dual-pool budget.
  * @returns the injection plan.
  */
-export function planMemoryInjection(store: MemoryStore, session: LiveSessionLike, maxChars: number): MemoryInjectionPlan {
+export function planMemoryInjection(store: MemoryStore, session: LiveSessionLike, options: MemoryBudgetOptions): MemoryInjectionPlan {
   const cwd = session.header.cwd
   if (cwd === undefined) return { kind: 'none' }
-  const block = assembleMemoryBlock(store.listActive(cwdToWorkspaceKey(cwd), session.id ?? null), { maxChars })
+  const block = assembleMemoryBlock(store.listActive(cwdToWorkspaceKey(cwd), session.id ?? null), options)
   if (block === '') return { kind: 'none' }
   const message = buildMemoryMessage(block)
   const row = findLastMemoryRow(session)
@@ -208,8 +219,8 @@ function isCompactCheckpointSource(source: unknown): boolean {
   return candidate.kind === 'plugin' && candidate.plugin === 'compact'
 }
 
-/** One-session harvest: store the checkpoint summary, run supersession, notify. Never throws. */
-function harvestCompaction(store: MemoryStore, session: SessionLike, event: CheckpointEventLike): void {
+/** One-session harvest: segment the checkpoint summary, store its segments, run supersession, notify. Never throws. */
+function harvestCompaction(store: MemoryStore, session: SessionLike, event: CheckpointEventLike, maxEntryChars: number): void {
   const seq = event.seq
   if (typeof seq !== 'number') return // no stable idempotency key
   const data = event.data as { content?: unknown } | undefined
@@ -221,10 +232,16 @@ function harvestCompaction(store: MemoryStore, session: SessionLike, event: Chec
   const createdAt = typeof event.time === 'number' ? event.time : Date.now()
   const shadowed = readSeqArray(event.sourceEventSeqs)
   const workspace = cwdToWorkspaceKey(cwd)
+  // Segment at harvest (pure function of text + cap → deterministic), so the
+  // store holds segment-level rows and re-harvest is idempotent at GROUP
+  // granularity (insertCompaction skips the whole event when any segment
+  // exists — a changed cap re-splitting the summary still stores nothing).
+  const segments = segmentSummary(content, maxEntryChars)
+  if (segments.length === 0) return
   const id = store.insertCompaction({
     workspace,
     sessionId: session.id,
-    content,
+    segments,
     sourceEventSeq: seq,
     shadowedEventSeqs: shadowed,
     createdAt,
@@ -249,6 +266,11 @@ export function apply(ctx: Context, config: Config): void {
   mkdirSync(memoryDir, { recursive: true })
   const db = new DatabaseSync(join(memoryDir, MEMORY_FILE))
   const store = new MemoryStore(db)
+  const budget: MemoryBudgetOptions = {
+    maxEntryChars: config.maxEntryChars ?? DEFAULT_MAX_ENTRY_CHARS,
+    maxCompactionSummaries: config.maxCompactionSummaries ?? DEFAULT_MAX_COMPACTION_SUMMARIES,
+    maxManualEntries: config.maxManualEntries ?? DEFAULT_MAX_MANUAL_ENTRIES,
+  }
 
   ctx.effect(() => {
     const disposers: Array<() => void> = []
@@ -285,7 +307,7 @@ export function apply(ctx: Context, config: Config): void {
         // here is contained to a warning; the waterfall always proceeds.
         plan = session === undefined
           ? { kind: 'none' }
-          : planMemoryInjection(store, session, config.maxBlockChars ?? DEFAULT_MAX_BLOCK_CHARS)
+          : planMemoryInjection(store, session, budget)
       } catch (error) {
         ctx.logger.warn(`[dsh-memory] injection failed: ${error instanceof Error ? error.message : String(error)}`)
       }
@@ -311,7 +333,7 @@ export function apply(ctx: Context, config: Config): void {
     // write lands via the next pre-step's digest comparison (no
     // system-prompt/change notify needed anymore — the injected bytes are
     // the persisted row, replaced in place).
-    disposers.push(installMemoryTools(scoped.tools, store))
+    disposers.push(installMemoryTools(scoped.tools, store, budget.maxEntryChars))
 
     // Fire-and-forget harvest: every exception is contained to a warning log,
     // never thrown into the compaction transaction (spec decision 15).
@@ -320,7 +342,7 @@ export function apply(ctx: Context, config: Config): void {
       const data = event.data as { source?: unknown } | undefined
       if (!isCompactCheckpointSource(data?.source)) return
       try {
-        harvestCompaction(store, session, event)
+        harvestCompaction(store, session, event, budget.maxEntryChars)
       } catch (error) {
         ctx.logger.warn(`[dsh-memory] compaction harvest failed: ${error instanceof Error ? error.message : String(error)}`)
       }

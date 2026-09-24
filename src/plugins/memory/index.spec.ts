@@ -194,12 +194,17 @@ function downstreamMessages(decision: PreStepDecisionLike): readonly UserMessage
 }
 
 describe('plugin contract', () => {
-  it('declares the id, the strict tools-only injection, and the budget config', () => {
+  it('declares the id, the strict tools-only injection, and the dual-pool config', () => {
     expect(name).toBe('dsh-memory')
     expect(inject).toEqual(['tools'])
-    expect(Config({})).toEqual({ maxBlockChars: 6000 })
-    expect(Config({ maxBlockChars: 9000 })).toEqual({ maxBlockChars: 9000 })
-    expect(() => Config({ maxBlockChars: 0 })).toThrow()
+    expect(Config({})).toEqual({ maxEntryChars: 2500, maxCompactionSummaries: 2, maxManualEntries: 10 })
+    expect(Config({ maxEntryChars: 9000 })).toEqual({
+      maxEntryChars: 9000,
+      maxCompactionSummaries: 2,
+      maxManualEntries: 10,
+    })
+    expect(() => Config({ maxEntryChars: 0 })).toThrow()
+    expect(() => Config({ maxCompactionSummaries: -1 })).toThrow()
   })
 })
 
@@ -407,8 +412,8 @@ describe('compaction harvest (session/event → next injection)', () => {
     expect(text).toContain('- ship the plugin')
   })
 
-  it('applies the configured char budget to the injected block', async () => {
-    const mounted = mount({ maxBlockChars: 400 })
+  it('drops the oldest checkpoint group under maxCompactionSummaries (whole-group admission)', async () => {
+    const mounted = mount({ maxCompactionSummaries: 1 })
     const session = fakeSession()
     await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
     await mounted.fire('session/event', session, checkpointEvent(20, [11], '## Primary Request and Intent\n- newer checkpoint content'))
@@ -417,6 +422,43 @@ describe('compaction harvest (session/event → next injection)', () => {
     expect(text).toContain('- newer checkpoint content')
     expect(text).not.toContain('- ship the plugin')
     expect(text).toContain('(1 older memories omitted)')
+  })
+
+  it('drops the oldest manual entries over maxManualEntries without touching the compaction pool', async () => {
+    const mounted = mount({ maxManualEntries: 1 })
+    const session = fakeSession()
+    await mounted.executes('memory_write', { content: 'first note' }, { agent: { id: 's1', session } })
+    await mounted.executes('memory_write', { content: 'second note' }, { agent: { id: 's1', session } })
+    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    const decision = await mounted.prestep(session)
+    const text = (injectedMemoryMessage(decision)?.content[0] as { text: string }).text
+    expect(text).toContain('second note')
+    expect(text).not.toContain('first note')
+    expect(text).toContain('- ship the plugin')
+    expect(text).toContain('(1 older memories omitted)')
+  })
+
+  it('segments a long summary end-to-end: cont markers in the injected block, digest stable across unchanged steps', async () => {
+    const mounted = mount()
+    const session = fakeSession()
+    const bullets = Array.from({ length: 10 }, () => `- ${'x'.repeat(298)}`)
+    const longSummary = `## Files and Code\n${bullets.join('\n')}\n\n## Key Technical Concepts\n- node:sqlite`
+    await mounted.fire('session/event', session, checkpointEvent(10, [1], longSummary))
+    const first = await mounted.prestep(session)
+    const memory = injectedMemoryMessage(first)
+    expect(memory).toBeDefined()
+    const text = (memory?.content[0] as { text: string }).text
+    // The oversized Files section split into 2 chunks (8 + 2 bullets at the
+    // default cap), each carrying its cont marker; the small section stayed whole.
+    expect(text).toContain('## Files and Code (cont. 1/2)')
+    expect(text).toContain('## Files and Code (cont. 2/2)')
+    expect(text).toContain('## Key Technical Concepts')
+    expect(text.match(/<checkpoint/g)).toHaveLength(1)
+    // Digest stability: the same store renders the same bytes → no-op.
+    if (memory !== undefined) persistMemoryRow(session, memory)
+    const second = await mounted.prestep(session)
+    expect(injectedMemoryMessage(second)).toBeUndefined()
+    expect(session.appends).toHaveLength(1)
   })
 })
 
@@ -474,6 +516,18 @@ describe('tools', () => {
     const written = await mounted.executes('memory_write', { content: 'workspace fact' }, { agent: { id: 's1', session } })
     expect(written).toEqual({ id: 1, scope: 'workspace' })
     await expect(mounted.executes('memory_write', { content: '   ' }, { agent: { id: 's1', session } })).rejects.toThrow()
+  })
+
+  it('memory_write truncates content over maxEntryChars at write time with the segment marker', async () => {
+    const mounted = mount({ maxEntryChars: 200 })
+    const session = fakeSession()
+    const written = await mounted.executes('memory_write', { content: 'x'.repeat(500) }, { agent: { id: 's1', session } })
+    expect(written).toEqual({ id: 1, scope: 'workspace' })
+    const listed = await mounted.executes('memory_list', {}, { agent: { id: 's1', session } })
+    const content = (listed as { memories: Array<{ content: string }> }).memories[0]?.content
+    expect(content).toContain('[segment truncated: 364 chars omitted]')
+    expect(content?.length).toBeLessThanOrEqual(200)
+    expect(content).not.toContain('x'.repeat(400))
   })
 
   it('memory_write session scope fails loudly without session context', async () => {

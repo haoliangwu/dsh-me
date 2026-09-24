@@ -7,7 +7,7 @@
  * callback needed — injection is digest-driven, not notify-driven).
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { cwdToWorkspaceKey, scopeOfRow, type ManualScope, type MemoryBlockRow } from './pure.ts'
+import { cwdToWorkspaceKey, hardTruncateText, scopeOfRow, type ManualScope, type MemoryBlockRow } from './pure.ts'
 import type { MemoryStore } from './store.ts'
 
 /** Structural tool-registry face: register returns a disposer. */
@@ -71,9 +71,10 @@ function toListEntry(row: MemoryBlockRow): ListEntry {
  * Register the three memory tools on the given registry.
  * @param ctx - the tool-registry face.
  * @param store - the memory store.
+ * @param maxEntryChars - the entry cap: a memory_write over it is truncated at write with the segment-truncation marker.
  * @returns the composite disposer unregistering all three tools.
  */
-export function installMemoryTools(ctx: ToolsLike, store: MemoryStore): () => void {
+export function installMemoryTools(ctx: ToolsLike, store: MemoryStore, maxEntryChars: number): () => void {
   const disposers: Array<() => void> = []
 
   disposers.push(ctx.register(defineTool({
@@ -113,6 +114,9 @@ export function installMemoryTools(ctx: ToolsLike, store: MemoryStore): () => vo
       exec.signal?.throwIfAborted()
       const content = args.content.trim()
       if (content === '') throw new Error('memory_write content must not be empty')
+      // Over-cap entry: truncate AT WRITE with the same marker the splitter
+      // uses — a single manual memory can never grow unbounded (spec US-8).
+      const stored = content.length > maxEntryChars ? hardTruncateText(content, maxEntryChars) : content
       const requested = args.scope ?? 'workspace'
       // A genuine workspace/global write without a calling agent is a caller
       // bug; session scope needs a session context (resolveWriteScope throws).
@@ -127,7 +131,7 @@ export function installMemoryTools(ctx: ToolsLike, store: MemoryStore): () => vo
       }
       const workspace = scope === 'global' ? null : workspaceKeyOf(exec)
       const sessionId = scope === 'session' ? (exec.agent?.session?.id ?? null) : null
-      const id = store.insertManual(scope, { content, sessionId, workspace })
+      const id = store.insertManual(scope, { content: stored, sessionId, workspace })
       return { id, scope }
     },
   })))

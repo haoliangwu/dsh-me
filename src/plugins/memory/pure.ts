@@ -1,15 +1,15 @@
 /**
- * dsh-memory pure decision core: compaction-section filtering, memory-block
- * assembly with a char budget, supersession detection, cwd-hash workspace
- * keying, and the injected context-message builder. Zero I/O and zero sqlite
- * — store rows are plain values here, so vitest covers every branch without
- * a database.
+ * dsh-memory pure decision core: compaction-section segmentation (harvest
+ * splitting), dual-pool memory-block assembly, supersession detection,
+ * cwd-hash workspace keying, wire whitespace normalization, and the injected
+ * context-message builder. Zero I/O and zero sqlite — store rows are plain
+ * values here, so vitest covers every branch without a database.
  */
 import { createHash, randomUUID } from 'node:crypto'
 import { MessageId } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 
-/** Persistent compaction sections kept at render time (spec decision: whitelist). */
+/** Persistent compaction sections kept at harvest time (spec decision: whitelist). */
 export const PERSISTENT_SECTIONS = [
   'Primary Request and Intent',
   'Key Technical Concepts',
@@ -27,7 +27,7 @@ export const MEMORY_PLUGIN = 'dsh-memory'
  */
 export const MEMORY_HEADER_LINE = 'Persisted cross-session memory:'
 
-/** Volatile compaction sections dropped at render time (dead-session transient state). */
+/** Volatile compaction sections dropped at harvest time (dead-session transient state). */
 export const VOLATILE_SECTIONS = ['Pending Jobs', 'Current Work', 'Next Step'] as const
 
 /** One row as the renderer and the supersession matcher see it (mirrors the store's active rows). */
@@ -39,6 +39,12 @@ export interface MemoryBlockRow {
   readonly session_id: string | null
   readonly kind: 'manual' | 'compaction'
   readonly content: string
+  /** The owning section name for compaction segments; NULL for manual rows and whole-summary fallbacks. */
+  readonly heading: string | null
+  /** Segment order within its checkpoint group (manual rows are always 0). */
+  readonly segment_index: number
+  /** Checkpoint event seq — the compaction group key (NULL for manual rows). */
+  readonly source_event_seq: number | null
   readonly created_at: number
 }
 
@@ -74,6 +80,7 @@ export function scopeOfRow(row: MemoryBlockRow): ManualScope {
 }
 
 const HEADING_RE = /^##\s+(.+)$/
+const TOP_BULLET_RE = /^- |^\d+\. /
 
 /** One `## `-split fragment: the heading line plus its body, or an unnamed preamble. */
 interface SummarySection {
@@ -104,47 +111,250 @@ function splitSummarySections(raw: string): SummarySection[] {
 const isVolatile = (heading: string): boolean => (VOLATILE_SECTIONS as readonly string[]).includes(heading)
 const isPersistent = (heading: string): boolean => (PERSISTENT_SECTIONS as readonly string[]).includes(heading)
 
-/**
- * Reduce one compaction summary to its persistent sections: whitelist sections
- * keep (empty `(none)` bodies dropped), volatile sections drop, unknown
- * headings keep (never lose data). When no known heading parses, the whole
- * raw text passes through unchanged — custom summarizer output is injected
- * verbatim. Filtering happens only at render time; the store keeps the full
- * text.
- * @param raw - one compaction summary's full text.
- * @returns the filtered text.
- */
-export function filterSummarySections(raw: string): string {
+/** The harvest-kept sections of one summary plus whether any known heading parsed. */
+function keptSections(raw: string): { readonly known: boolean; readonly sections: readonly SummarySection[] } {
   const sections = splitSummarySections(raw)
   const known = sections.some(section => section.heading !== undefined
     && (isVolatile(section.heading) || isPersistent(section.heading)))
-  if (!known) return raw
-  return sections
-    .filter(section => {
+  if (!known) return { known, sections }
+  return {
+    known,
+    sections: sections.filter(section => {
       if (section.heading === undefined) return true // preamble: unknown → keep
       if (isVolatile(section.heading)) return false
       const body = section.lines.slice(1).join('\n').trim()
       return body !== '' && body !== '(none)'
-    })
+    }),
+  }
+}
+
+/**
+ * Reduce one compaction summary to its persistent sections (the harvest
+ * filtering step; segmentation consumes the same kept sections). When no
+ * known heading parses the whole raw text passes through unchanged — custom
+ * summarizer output is never lost.
+ * @param raw - one compaction summary's full text.
+ * @returns the filtered text.
+ */
+export function filterSummarySections(raw: string): string {
+  return keptSections(raw).sections
     .map(section => section.lines.join('\n'))
     .join('\n')
     .trim()
 }
 
+/** One harvested compaction segment: the store row unit (segment = budget atom). */
+export interface MemorySegment {
+  readonly heading: string | null
+  /** Full segment text: `## <heading>\n<body>`, a `## <heading> (cont. i/N)` chunk, or the whole-summary fallback. */
+  readonly content: string
+  /** Segment order within its source summary (0-based, across all sections). */
+  readonly segmentIndex: number
+}
+
+/** The truncation tail marker appended when a single atomic unit still exceeds the entry cap — the system's ONLY data-loss path. */
+export function hardTruncateText(text: string, cap: number): string {
+  const kept = Math.max(0, cap - 64)
+  const omitted = text.length - kept
+  const marker = `[segment truncated: ${omitted} chars omitted]`
+  return `${text.slice(0, kept)}${kept > 0 ? '\n' : ''}${marker}`
+}
+
+/**
+ * Reserved per-chunk budget beyond the heading text itself: the `## ` prefix
+ * and newline (4 chars) plus the widest possible ` (cont. 9999/9999)` suffix
+ * (18 chars), padded with slack so a near-miss fit never strands a unit.
+ */
+const CONT_HEADER_OVERHEAD = 40
+
+/** Per-chunk header allowance inside a split section: `## H\n` plus ` (cont. 9999/9999)`. */
+const headerAllowance = (heading: string | null): number => (heading === null ? 0 : heading.length + CONT_HEADER_OVERHEAD)
+
+/** A ``` code-fence delimiter line (opening ```lang or bare closing ```). */
+const isFence = (line: string): boolean => line.trimStart().startsWith('```')
+
+/** Trim blank lines off a line block's edges; drop blocks that become empty. */
+function trimBlock(lines: string[]): string[] {
+  let start = 0
+  let end = lines.length
+  while (start < end && lines[start]?.trim() === '') start += 1
+  while (end > start && lines[end - 1]?.trim() === '') end -= 1
+  return lines.slice(start, end)
+}
+
+/**
+ * Split a section's lines into top-level bullet blocks: a block starts at a
+ * column-0 `- ` / `\d+. ` bullet and runs until the next top-level bullet;
+ * indented continuation lines, nested bullets, blank lines, and fenced code
+ * belong to the current block. Prose before the first bullet is its own
+ * block (spec: bullet-block greedy bin-packing).
+ */
+function splitBulletBlocks(lines: string[]): string[] {
+  const blocks: string[][] = []
+  let current: string[] | undefined
+  for (const line of lines) {
+    if (line.length > 0 && TOP_BULLET_RE.test(line)) {
+      current = [line]
+      blocks.push(current)
+      continue
+    }
+    if (current === undefined) {
+      current = []
+      blocks.push(current)
+    }
+    current.push(line)
+  }
+  return blocks
+    .map(block => trimBlock(block))
+    .filter(block => block.length > 0)
+    .map(block => block.join('\n'))
+}
+
+/**
+ * Split one block at ``` fence boundaries: the FIRST fence delimiter line
+ * (the opening ```lang, or a bare ```) stays attached to the unit that
+ * follows — the fence body — and the SECOND one (the closer) ends the piece.
+ * Fences alternate open/close, so a chunk break can never land between an
+ * opener and its body: a ` (cont. i/N)` header must not sit inside a code
+ * fence, and an opener never becomes a standalone unit.
+ */
+function splitAtFences(lines: string[]): string[] {
+  const pieces: string[][] = []
+  let current: string[] = []
+  let inFence = false
+  for (const line of lines) {
+    current.push(line)
+    if (!isFence(line)) continue
+    if (!inFence) {
+      inFence = true // fence opener: stays with the body that follows
+      continue
+    }
+    pieces.push(current) // fence closer: the piece it opened ends here
+    current = []
+    inFence = false
+  }
+  if (current.length > 0) pieces.push(current)
+  return pieces.filter(piece => piece.some(line => line.trim() !== '')).map(piece => piece.join('\n'))
+}
+
+/** Split one block into paragraphs on blank-line boundaries (the non-bullet fallback). */
+function splitParagraphs(lines: string[]): string[] {
+  const blocks: string[][] = []
+  let current: string[] = []
+  for (const line of lines) {
+    if (line.trim() === '') {
+      if (current.length > 0) blocks.push(current)
+      current = []
+      continue
+    }
+    current.push(line)
+  }
+  if (current.length > 0) blocks.push(current)
+  return blocks.map(block => block.join('\n'))
+}
+
+/**
+ * Expand one oversized section body into bucket units ≤ cap: bullet blocks as
+ *-is, fence-split when a single block still exceeds the cap, hard-truncate
+ * when a fence piece still exceeds it.
+ */
+function expandUnits(blocks: string[], cap: number, heading: string | null): string[] {
+  const units: string[] = []
+  for (const block of blocks) {
+    if (block.length <= cap) {
+      units.push(block)
+      continue
+    }
+    const pieces = splitAtFences(block.split('\n'))
+    for (const piece of pieces) {
+      units.push(piece.length <= cap ? piece : hardTruncateText(piece, Math.max(1, cap - headerAllowance(heading))))
+    }
+  }
+  return units
+}
+
+/**
+ * Greedy bin-pack line blocks into chunks ≤ cap, preserving order. Chunk
+ * content = `## <heading> (cont. i/N)` + its blocks; a sole chunk uses the
+ * plain `## <heading>` header. Deterministic in (text, cap).
+ */
+function packChunks(units: string[], cap: number, heading: string | null, indexStart: number): MemorySegment[] {
+  const allowance = headerAllowance(heading)
+  const chunks: string[][] = []
+  let current: string[] = []
+  let currentLen = 0
+  for (const unit of units) {
+    const added = current.length === 0 ? unit.length : 1 + unit.length
+    if (current.length > 0 && currentLen + added + allowance > cap) {
+      chunks.push(current)
+      current = [unit]
+      currentLen = unit.length
+    } else {
+      current.push(unit)
+      currentLen += added
+    }
+  }
+  if (current.length > 0) chunks.push(current)
+  const count = chunks.length
+  let index = indexStart
+  return chunks.map((chunk, i) => {
+    const cont = count > 1 ? ` (cont. ${i + 1}/${count})` : ''
+    const header = heading === null ? '' : `## ${heading}${cont}`
+    const body = chunk.join('\n')
+    return { heading, content: header === '' ? body : `${header}\n${body}`, segmentIndex: index++ }
+  })
+}
+
+/** Segment one kept section: whole when it fits, bullet/paragraph packing with fence/truncate fallbacks otherwise. */
+function segmentSection(section: SummarySection, cap: number, indexStart: number): MemorySegment[] {
+  const heading = section.heading ?? null
+  const text = section.lines.join('\n').trim()
+  if (text === '') return []
+  if (text.length <= cap) return [{ heading, content: text, segmentIndex: indexStart }]
+  // Split on the BODY only — the heading line is not a bullet block/paragraph
+  // of its own (it becomes the per-chunk `cont` header instead).
+  const bodyLines = heading === null ? section.lines : section.lines.slice(1)
+  const isBulleted = bodyLines.some(line => line.length > 0 && TOP_BULLET_RE.test(line))
+  const units = isBulleted
+    ? expandUnits(splitBulletBlocks(bodyLines), cap, heading)
+    : splitParagraphs(bodyLines).map(block => block.length <= cap ? block : hardTruncateText(block, Math.max(1, cap - headerAllowance(heading))))
+  return packChunks(units, cap, heading, indexStart)
+}
+
+/**
+ * The harvest splitter (pure function of text + cap → deterministic segments):
+ * section filter first, then per-section three-level splitting — whole section
+ * when ≤ cap, bullet-block greedy bin-packing (or paragraph split for prose)
+ * when oversized, fence-boundary split when a single block still exceeds the
+ * cap, and hard truncation with the `[segment truncated: N chars omitted]`
+ * marker as the last resort (the system's only data-loss path). Empty
+ * sections are skipped; a summary with no known heading falls back to one
+ * whole segment verbatim.
+ * @param raw - one compaction summary's full text.
+ * @param maxEntryChars - the entry cap (segment budget atom).
+ * @returns the harvest segments in section order.
+ */
+export function segmentSummary(raw: string, maxEntryChars: number): MemorySegment[] {
+  const rawText = raw.trim()
+  if (rawText === '') return []
+  const { known, sections } = keptSections(rawText)
+  if (!known) return [{ heading: null, content: rawText, segmentIndex: 0 }]
+  const segments: MemorySegment[] = []
+  for (const section of sections) segments.push(...segmentSection(section, maxEntryChars, segments.length))
+  return segments
+}
+
 /** Manual scope rank for the injection order: global → workspace → session. */
 const MANUAL_RANK: Record<ManualScope, number> = { global: 0, workspace: 1, session: 2 }
 
-/** Injection order (spec): global manual → workspace manual → session notes → checkpoints, newest first within each tier. */
-function orderRows(rows: readonly MemoryBlockRow[]): MemoryBlockRow[] {
-  return [...rows].sort((a, b) => {
-    if (a.kind !== b.kind) return a.kind === 'manual' ? -1 : 1
-    if (a.kind === 'manual') {
-      const rankA = MANUAL_RANK[scopeOfRow(a)]
-      const rankB = MANUAL_RANK[scopeOfRow(b)]
-      if (rankA !== rankB) return rankA - rankB
-    }
-    return b.created_at - a.created_at
-  })
+/** The dual-pool budget knobs (spec: counts, not chars). */
+export interface MemoryBudgetOptions {
+  /** Entry cap: harvest split threshold + memory_write truncation threshold (default 2500). */
+  readonly maxEntryChars: number
+  /** Compaction pool size: whole checkpoint groups, newest first (default 2). */
+  readonly maxCompactionSummaries: number
+  /** Manual pool size: single entries across all scopes, newest first (default 10). */
+  readonly maxManualEntries: number
 }
 
 /** The checkpoint date attribute: the created-at timestamp's UTC calendar day. */
@@ -152,13 +362,16 @@ function dateOf(createdAt: number): string {
   return new Date(createdAt).toISOString().slice(0, 10)
 }
 
-/** Render one row as a `<note>` or `<checkpoint>` element (spec format). */
-function renderRow(row: MemoryBlockRow): string {
-  if (row.kind === 'manual') {
-    return `<note id="${row.id}" scope="${scopeOfRow(row)}">${row.content}</note>`
-  }
-  return `<checkpoint id="${row.id}" session="${row.session_id ?? ''}" date="${dateOf(row.created_at)}">\n`
-    + filterSummarySections(row.content)
+/** Render one manual row as a `<note>` element (spec format). */
+function renderNote(row: MemoryBlockRow): string {
+  return `<note id="${row.id}" scope="${scopeOfRow(row)}">${row.content}</note>`
+}
+
+/** Render one checkpoint group as a `<checkpoint>` element: its segments in segment_index order (reads like a condensed summary). */
+function renderCheckpoint(segments: readonly MemoryBlockRow[]): string {
+  const first = segments[0]
+  return `<checkpoint id="${first.id}" session="${first.session_id ?? ''}" date="${dateOf(first.created_at)}">\n`
+    + segments.map(segment => segment.content).join('\n')
     + '\n</checkpoint>'
 }
 
@@ -169,33 +382,101 @@ const BLOCK_HEADER = '## Project Memory\n'
 const BLOCK_FOOTER = '</project-memory>'
 
 /**
- * Assemble the injected memory block: ordered rows under the fixed header,
- * trimmed from the tail until the char budget fits (the newest checkpoints
- * survive first; manual notes are never trimmed before older content). When
- * the budget forces drops, the omitted count is appended after the wrapper.
- * When even the smallest prefix outgrows the budget, zero rows render with an
- * omitted count covering all rows — the cap is hard (spec US-5).
- * @param rows - active store rows (any order; ordering happens here).
- * @param options - the char budget.
- * @returns the rendered block, or '' for an empty store.
+ * Normalize block whitespace on the wire (render layer only; the store keeps
+ * raw text): outside code fences, collapse blank-line runs (>1 → 1) and strip
+ * trailing whitespace per line; fence interiors stay untouched. Deterministic.
+ * @param text - the assembled block before normalization.
+ * @returns the normalized block.
  */
-export function assembleMemoryBlock(rows: readonly MemoryBlockRow[], options: { maxChars: number }): string {
-  if (rows.length === 0) return ''
-  const pieces = orderRows(rows).map(renderRow)
-  const render = (count: number): string => {
-    const kept = pieces.slice(0, count)
-    const omitted = pieces.length - count
-    const text = `${BLOCK_HEADER}${kept.join('\n')}${kept.length > 0 ? '\n' : ''}${BLOCK_FOOTER}`
-    return omitted > 0 ? `${text}\n(${omitted} older memories omitted)` : text
-  }
-  let best = 0
-  for (let count = pieces.length; count >= 1; count -= 1) {
-    if (render(count).length <= options.maxChars) {
-      best = count
-      break
+export function normalizeBlockWhitespace(text: string): string {
+  const out: string[] = []
+  let inFence = false
+  let pendingBlank = false
+  for (const line of text.split('\n')) {
+    const fenceDelimiter = isFence(line)
+    if (inFence) {
+      out.push(line)
+      if (fenceDelimiter) inFence = false
+      continue
+    }
+    if (fenceDelimiter) {
+      inFence = true
+      out.push(line.replace(/\s+$/, ''))
+      pendingBlank = false
+      continue
+    }
+    const stripped = line.replace(/\s+$/, '')
+    if (stripped === '') {
+      if (!pendingBlank) out.push('')
+      pendingBlank = true
+    } else {
+      out.push(stripped)
+      pendingBlank = false
     }
   }
-  return render(best)
+  return out.join('\n')
+}
+
+/**
+ * Assemble the injected memory block over the TWO independent pools (spec):
+ * manual entries first — admission takes the newest maxManualEntries across
+ * ALL scopes (global-time ranked; an older entry of a higher tier never
+ * holds a slot against a newer one), then the kept set renders in scope-tier
+ * order global → workspace → session, newest first within each tier — then
+ * compaction checkpoint groups newest→old (whole-group admission capped at
+ * maxCompactionSummaries — a group is never beheaded). Both pools drop from
+ * the OLDEST end, and the dropped count is annotated after the wrapper. The
+ * rendered byte stream is whitespace-normalized (fence interiors untouched);
+ * the digest later runs over this exact text.
+ * @param rows - active store rows (any order; grouping/ordering happens here).
+ * @param options - the dual-pool budget.
+ * @returns the rendered block, or '' for an empty store.
+ */
+export function assembleMemoryBlock(rows: readonly MemoryBlockRow[], options: MemoryBudgetOptions): string {
+  if (rows.length === 0) return ''
+  // Manual pool admission: the newest maxManualEntries across ALL scopes
+  // (global-time ranked). The kept set is THEN rendered in scope-tier order
+  // (global → workspace → session), newest first within each tier.
+  const allManual = rows.filter(row => row.kind === 'manual')
+  const admittedManual = allManual
+    .sort((a, b) => b.created_at - a.created_at)
+    .slice(0, Math.max(0, options.maxManualEntries))
+  const keptManual = [...admittedManual].sort((a, b) => {
+    const rankA = MANUAL_RANK[scopeOfRow(a)]
+    const rankB = MANUAL_RANK[scopeOfRow(b)]
+    if (rankA !== rankB) return rankA - rankB
+    return b.created_at - a.created_at
+  })
+  // Compaction pool: whole groups keyed by source_event_seq, newest group first.
+  const groups = new Map<number, MemoryBlockRow[]>()
+  for (const row of rows) {
+    if (row.kind !== 'compaction' || row.source_event_seq === null) continue
+    const group = groups.get(row.source_event_seq)
+    if (group === undefined) groups.set(row.source_event_seq, [row])
+    else group.push(row)
+  }
+  const orderedGroups = [...groups.entries()]
+    .map(([seq, segments]) => ({ seq, segments, createdAt: Math.max(...segments.map(segment => segment.created_at)) }))
+    .sort((a, b) => b.createdAt - a.createdAt)
+  const keptGroups = orderedGroups.slice(0, Math.max(0, options.maxCompactionSummaries))
+  const dropped = (allManual.length - keptManual.length) + (orderedGroups.length - keptGroups.length)
+  const pieces: string[] = [
+    ...keptManual.map(renderNote),
+    ...keptGroups.map(group => renderCheckpoint(
+      [...group.segments].sort((a, b) => a.segment_index - b.segment_index),
+    )),
+  ]
+  if (pieces.length === 0) {
+    // Rows exist but every pool dropped everything (e.g. maxManualEntries 0
+    // over a manual-only store): still render the header + omission
+    // annotation — '' is reserved for the truly-empty store ("never inject").
+    let text = `${BLOCK_HEADER}${BLOCK_FOOTER}`
+    if (dropped > 0) text += `\n(${dropped} older memories omitted)`
+    return normalizeBlockWhitespace(text)
+  }
+  let text = `${BLOCK_HEADER}${pieces.join('\n')}\n${BLOCK_FOOTER}`
+  if (dropped > 0) text += `\n(${dropped} older memories omitted)`
+  return normalizeBlockWhitespace(text)
 }
 
 /** Supersession matcher input: any row slice carrying the identity columns. */
@@ -210,7 +491,8 @@ export interface SupersessionCandidate {
  * Which active compaction rows a new summary supersedes: rows whose own
  * `source_event_seq` appears in the new summary's shadowed seqs (spec —
  * chained compactions merge the older checkpoint, so only the newest stays
- * injected).
+ * injected; per-row marking covers the whole group since every segment shares
+ * the seq).
  * @param newShadowedSeqs - the new summary's shadowed event seqs.
  * @param existingRows - stored rows of the same workspace.
  * @returns the row ids to mark superseded.
@@ -240,7 +522,8 @@ export function cwdToWorkspaceKey(cwd: string): string {
  * Full sha256 hex digest of a text. The injection change-detection key: the
  * persisted memory row stays byte-stable while the block is unchanged, and a
  * store write flips the digest so the next pre-step replaces the row in
- * place (provider prefix cache stays reusable across unchanged steps).
+ * place (provider prefix cache stays reusable across unchanged steps). The
+ * digest runs over the NORMALIZED block (mechanism unchanged).
  * @param text - the text to hash.
  * @returns the 64-hex sha256 digest.
  */
