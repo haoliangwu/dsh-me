@@ -107,6 +107,23 @@
   border-color: var(--dsw-alias-state-error-primary);
 }
 
+/* Entry metadata captions (prepareMemoryMarkdown turns each `<checkpoint …>`
+   open tag into a `> Checkpoint · date · session` blockquote): secondary
+   size + tertiary color on host caption tokens — small muted text under the
+   host's caption-colored left rule, doubling as the group separator between
+   entries now that the wire tags are hidden. Content blockquotes inside the
+   memory text inherit the same muted aside treatment (fits the card).
+   The inner paragraph collapses so the caption sits tight under its rule. */
+.block blockquote {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: calc(20px + var(--dsh-content-font-delta-secondary, 0px));
+}
+
+.block blockquote p {
+  margin: 0;
+}
+
 .block {
   /* Card surface for the markdown render (MarkdownBody pattern): the
      container owns the opaque background, border, and padding; the host

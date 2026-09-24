@@ -4,8 +4,9 @@
  * open = component mount — the spec's freshness decision) through the
  * injected `fetchBlock` seam (Connection RPC `/dsh-memory` endpoint `block`),
  * renders the result as markdown through the host's frozen `MarkdownText`
- * primitive (same injected bytes, rendered — the model's-eye view) on a card
- * surface, and offers one manual refresh control.
+ * primitive (content identical to the injected block; wire-format tag lines
+ * are hidden view-side via `prepareMemoryMarkdown`) on a card surface, and
+ * offers one manual refresh control.
  * No polling, no push: cross-session store changes are only picked up by a
  * deliberate refresh (the honest semantics under manual refresh).
  *
@@ -38,7 +39,7 @@ export interface MemoryViewInjected {
 
 /** Every user-facing string of the tab, exported so the spec pins copy to one source. */
 export const MEMORY_VIEW_COPY = {
-  caption: "The memory block injected for this session, rendered as markdown — the model's-eye view.",
+  caption: "The memory block injected for this session — wire-format tags hidden, content identical to the injected block.",
   loading: 'Loading memory block…',
   error: "Couldn't load the memory block.",
   retry: 'Retry',
@@ -61,37 +62,123 @@ export const MEMORY_MARKDOWN_LABELS: MarkdownLabels = {
  */
 const TAG_LINE = /^(\s*)(<\/?[a-zA-Z][^>]*>)\s*$/
 
+/** A single-line note entry: `<note id="14" scope="workspace">content</note>`. */
+const NOTE_LINE = /^<note\s+[^>]*>(.*)<\/note>$/
+
+/** A checkpoint open tag carrying its provenance attributes. */
+const CHECKPOINT_OPEN = /^<checkpoint\s+([^>]*)>$/
+
+/** Attribute pairs inside an open tag (`id="13" session="…" date="…"`). */
+const ATTRIBUTE = /([a-zA-Z][\w-]*)="([^"]*)"/g
+
+/**
+ * Pure wrapper / closing tag lines with no content of their own. Hidden from
+ * the view entirely — the wire bytes stay untouched upstream.
+ */
+function isStructuralTag(trimmedLine: string): boolean {
+  return (
+    trimmedLine === '<project-memory>' ||
+    trimmedLine === '</project-memory>' ||
+    trimmedLine === '</note>' ||
+    trimmedLine === '</checkpoint>' ||
+    /^<note\s+[^>]*>$/.test(trimmedLine)
+  )
+}
+
+/**
+ * The muted provenance caption that replaces a raw `<checkpoint …>` open tag:
+ * `> Checkpoint · 2026-09-24 · session-abcd…7890`. It keeps the facts a human
+ * wants (what / when / which session) and, as a blockquote, doubles as the
+ * visual group separator between entries now that the tags are gone.
+ * @param attrs - the attribute text between `<checkpoint` and `>`.
+ * @returns one markdown blockquote line.
+ */
+function checkpointCaption(attrs: string): string {
+  const fields = new Map<string, string>()
+  for (const match of attrs.matchAll(ATTRIBUTE)) fields.set(match[1], match[2])
+  const parts = ['Checkpoint']
+  const date = fields.get('date')
+  if (date !== undefined) parts.push(date)
+  const session = fields.get('session')
+  if (session !== undefined) {
+    parts.push(session.length > 16 ? `${session.slice(0, 12)}…${session.slice(-4)}` : session)
+  }
+  return `> ${parts.join(' · ')}`
+}
+
 /**
  * View-side markdown preparation (presentation only — wire bytes untouched).
- * A tag line starting a paragraph opens a CommonMark HTML block (type 7),
- * which swallows every following line until a blank line — so markdown
- * inside the tag region (inline code, ordered lists) would never parse.
- * Fix: wrap each pure tag line in an inline-code fence (byte-visible, styled
- * as code = visually distinct from content) and isolate it in its own
- * paragraph with blank lines. Non-tag lines pass through unchanged.
+ * The wire-format tags are hidden from the rendered view:
+ * - pure wrapper / closing tag lines (`<project-memory>`, `</note>`,
+ *   `</checkpoint>`, …) drop out entirely;
+ * - a content-bearing note line keeps its content, tags stripped;
+ * - a `<checkpoint …>` open tag becomes a muted metadata caption line
+ *   (`> Checkpoint · date · short session id`) that separates entries.
+ * Each of those emitted units gets its own paragraph, so entries never glue
+ * together once the tags no longer bound them. A pure tag line that is NOT
+ * wire structure still falls back to the inline-code fence — otherwise it
+ * would open a CommonMark HTML block (type 7) and swallow the following
+ * lines as literal text. Other lines pass through unchanged.
  * @param block - the verbatim injected block.
  * @returns text safe to hand to the host `MarkdownText`.
  */
 export function prepareMemoryMarkdown(block: string): string {
   const lines = block.split('\n')
   const out: string[] = []
+  // A dropped structural tag ended a paragraph: the next emitted line needs
+  // a blank line before it so two entries can never merge into one paragraph.
+  let breakPending = false
+  const ensureBreak = (): void => {
+    if (out.length > 0 && out[out.length - 1] !== '') out.push('')
+  }
+  /** Emit a line that must stand alone as its own paragraph. */
+  const pushIsolated = (text: string): void => {
+    if (breakPending) {
+      ensureBreak()
+      breakPending = false
+    }
+    ensureBreak()
+    out.push(text)
+    breakPending = true // require a blank line after (consumed by next emission)
+  }
   for (let i = 0; i < lines.length; i++) {
-    const match = TAG_LINE.exec(lines[i])
-    if (match === null) {
-      out.push(lines[i])
+    const line = lines[i]
+    const trimmed = line.trim()
+    if (isStructuralTag(trimmed)) {
+      if (out.length > 0 && out[out.length - 1] !== '') breakPending = true
       continue
     }
-    const [, indent, tag] = match
-    // Own paragraph: blank line before, unless already at a block boundary.
-    if (out.length > 0 && out[out.length - 1] !== '') out.push('')
-    // Inline-code span; a backtick inside the tag needs a double fence and
-    // padding spaces per CommonMark code-span rules.
-    const fence = tag.includes('`') ? '``' : '`'
-    const inner = fence === '`' ? tag : ` ${tag} `
-    out.push(`${indent}${fence}${inner}${fence}`)
-    // Blank line after, unless the next line is already blank / no next line.
-    const next = lines[i + 1]
-    if (next !== undefined && next.trim() !== '') out.push('')
+    const note = NOTE_LINE.exec(trimmed)
+    if (note !== null) {
+      pushIsolated(note[1])
+      continue
+    }
+    const checkpoint = CHECKPOINT_OPEN.exec(trimmed)
+    if (checkpoint !== null) {
+      pushIsolated(checkpointCaption(checkpoint[1]))
+      continue
+    }
+    const tag = TAG_LINE.exec(line)
+    if (tag !== null) {
+      // Unknown pure tag line (not wire structure): still fenced + isolated
+      // so it cannot open a CommonMark HTML block. A backtick inside the tag
+      // needs a double fence and padding spaces per CommonMark code-span rules.
+      const [, indent, rawTag] = tag
+      const fence = rawTag.includes('`') ? '``' : '`'
+      const inner = fence === '`' ? rawTag : ` ${rawTag} `
+      pushIsolated(`${indent}${fence}${inner}${fence}`)
+      continue
+    }
+    // Ordinary content line (may be blank): pass through, honoring a
+    // pending paragraph break (the blank line itself satisfies it).
+    if (breakPending) {
+      ensureBreak()
+      breakPending = false
+      if (line.trim() === '') continue // the blank we just pushed is this one
+    } else if (line.trim() === '') {
+      if (out.length === 0 || out[out.length - 1] === '') continue // collapse runs
+    }
+    out.push(line)
   }
   return out.join('\n')
 }
@@ -174,10 +261,12 @@ export function MemoryView({ fetchBlock }: MemoryViewInjected) {
           <p className={css.notice}>{MEMORY_VIEW_COPY.empty}</p>
         ) : (
           // Card surface scopes host- MarkdownText's own CSS-module styles
-          // (MarkdownBody pattern). Tag lines are preprocessed into isolated
-          // code spans so they never open a CommonMark HTML block (which would
-          // swallow the markdown inside the tag region as literal text) —
-          // the tags still render as byte-visible text, never as elements.
+          // (MarkdownBody pattern). prepareMemoryMarkdown hides the wire
+          // format first: structural tag lines drop, note tags strip to their
+          // content, checkpoint opens become muted `> Checkpoint · …` caption
+          // blockquotes (entry separators) — unknown pure tag lines still
+          // fence into isolated code spans so they never open a CommonMark
+          // HTML block that would swallow the content that follows.
           <div className={css.block} data-memory-block="">
             <MarkdownText text={prepareMemoryMarkdown(state.block)} labels={MEMORY_MARKDOWN_LABELS} />
           </div>

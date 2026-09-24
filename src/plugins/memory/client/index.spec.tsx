@@ -198,7 +198,8 @@ describe('MemoryView host posture', () => {
     // imports and renders MarkdownText inside the [data-memory-block] card,
     // keeps no <pre>, and the card rule drops the pre-wrap posture —
     // markdown reflows long lines itself, and the host primitive keeps raw
-    // HTML (the block's <project-memory>-style tags) literal.
+    // HTML disabled — the wire tags never reach it (prepareMemoryMarkdown
+    // already hid them).
     const view = readFileSync(
       resolve(process.cwd(), 'src/plugins/memory/client/MemoryView.tsx'), 'utf8')
     expect(view).toContain("from '@deepseek-ai/dsh-client-ui-primitives'")
@@ -214,13 +215,70 @@ describe('MemoryView host posture', () => {
   })
 })
 
-describe('prepareMemoryMarkdown (HTML-block isolation)', () => {
-  it('wraps pure tag lines in code spans and isolates each with blank lines', () => {
-    // The note line carries content after its open tag, so it is not a pure
-    // tag line (and cannot open an HTML block) — it passes through untouched.
-    const input = 'intro line\n<project-memory>\n<note id="1" scope="global">x</note>\n</checkpoint>\n</project-memory>'
+describe('prepareMemoryMarkdown (wire-tag hiding)', () => {
+  it('drops structural tags and keeps heading, intro, and note content (single entry)', () => {
+    const input = '## Project Memory\nKnowledge from previous sessions.\n\n<project-memory>\n<note id="1" scope="global">user prefers terse replies</note>\n</project-memory>'
     expect(prepareMemoryMarkdown(input)).toBe(
-      'intro line\n\n`<project-memory>`\n\n<note id="1" scope="global">x</note>\n\n`</checkpoint>`\n\n`</project-memory>`')
+      '## Project Memory\nKnowledge from previous sessions.\n\nuser prefers terse replies')
+  })
+
+  it('strips note tags to bare content, each note its own paragraph', () => {
+    const input = '<note id="14" scope="workspace">alpha</note>\n<note id="13" scope="global">beta</note>'
+    expect(prepareMemoryMarkdown(input)).toBe('alpha\n\nbeta')
+  })
+
+  it('converts checkpoint open tags to date/session caption lines', () => {
+    const input =
+      '<checkpoint id="13" session="session-abcdef1234567890" date="2026-09-24">\nsummary\n</checkpoint>\n' +
+      '<checkpoint id="12" session="session-99887766" date="2026-09-23">\nolder\n</checkpoint>'
+    expect(prepareMemoryMarkdown(input)).toBe(
+      '> Checkpoint · 2026-09-24 · session-abcd…7890\n\nsummary\n\n' +
+      '> Checkpoint · 2026-09-23 · session-99887766\n\nolder')
+  })
+
+  it('renders a multi-entry block with no raw XML tags, one caption per checkpoint, content preserved', () => {
+    const input = [
+      '## Project Memory',
+      'Knowledge from previous sessions. May be stale; correct via memory_write.',
+      '',
+      '<project-memory>',
+      '<note id="14" scope="workspace">user prefers terse replies</note>',
+      '<checkpoint id="13" session="session-abcdef1234567890" date="2026-09-24">',
+      'compaction segment one',
+      '- bullet in checkpoint',
+      '</checkpoint>',
+      '<checkpoint id="12" session="session-99887766" date="2026-09-23">',
+      'older compaction content',
+      '</checkpoint>',
+      '</project-memory>',
+      '(2 older memories omitted)',
+    ].join('\n')
+    const prepared = prepareMemoryMarkdown(input)
+    // No wire markup survives — wrapper, note, and checkpoint tags all gone.
+    expect(prepared).not.toMatch(/<\/?(?:project-memory|note|checkpoint)\b/)
+    // One muted metadata caption per checkpoint, with date + short session id.
+    expect(prepared.match(/^> Checkpoint · /gm)).toHaveLength(2)
+    expect(prepared).toContain('> Checkpoint · 2026-09-24 · session-abcd…7890')
+    expect(prepared).toContain('> Checkpoint · 2026-09-23 · session-99887766')
+    // Content, heading/intro, and the omitted-count trailer stay byte-identical,
+    // and every entry is its own paragraph (never glued to the next).
+    expect(prepared).toBe([
+      '## Project Memory',
+      'Knowledge from previous sessions. May be stale; correct via memory_write.',
+      '',
+      'user prefers terse replies',
+      '',
+      '> Checkpoint · 2026-09-24 · session-abcd…7890',
+      '',
+      'compaction segment one',
+      '- bullet in checkpoint',
+      '',
+      '> Checkpoint · 2026-09-23 · session-99887766',
+      '',
+      'older compaction content',
+      '',
+      '(2 older memories omitted)',
+    ].join('\n'))
   })
 
   it('leaves non-tag lines untouched (content, lists, headings, inline tags)', () => {
@@ -228,23 +286,23 @@ describe('prepareMemoryMarkdown (HTML-block isolation)', () => {
     expect(prepareMemoryMarkdown(input)).toBe(input)
   })
 
-  it('does not duplicate an existing blank line around a tag', () => {
+  it('does not duplicate an existing blank line around a structural tag', () => {
     const input = 'before\n\n<project-memory>\n\nafter'
-    expect(prepareMemoryMarkdown(input)).toBe('before\n\n`<project-memory>`\n\nafter')
+    expect(prepareMemoryMarkdown(input)).toBe('before\n\nafter')
   })
 
-  it('keeps indentation and uses a double fence when the tag holds a backtick', () => {
-    expect(prepareMemoryMarkdown('  <note id="a`b">')).toBe('  `` <note id="a`b"> ``')
+  it('still fences an unknown pure tag line, with a double fence when it holds a backtick', () => {
+    expect(prepareMemoryMarkdown('  <div class="a`b">')).toBe('  `` <div class="a`b"> ``')
   })
 
-  it('preserves an ordered list after the tag so it parses as a list', () => {
+  it('preserves an ordered list after a checkpoint caption so it parses as a list', () => {
     const prepared = prepareMemoryMarkdown(
       '<checkpoint id="4">\n1. one `code`\n2. two\n3. three\n</checkpoint>')
-    // Blank line after the open tag: "1." starts a fresh paragraph (list),
-    // and the closing tag is fenced so it cannot swallow the list.
+    // Blank line after the caption: "1." starts a fresh paragraph (list);
+    // the closing structural tag drops without eating into the list.
     expect(prepared).toBe(
-      '`<checkpoint id="4">`\n\n1. one `code`\n2. two\n3. three\n\n`</checkpoint>`')
-    expect(prepared.split('\n\n')).toHaveLength(3) // tag / list / tag paragraphs
+      '> Checkpoint\n\n1. one `code`\n2. two\n3. three')
+    expect(prepared.split('\n\n')).toHaveLength(2) // caption / list paragraphs
   })
 })
 
