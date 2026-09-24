@@ -10,7 +10,10 @@
  * runs with the current default model selection, receives the context plus
  * the question as a followup, and its answer is extracted from the derived
  * surface and returned straight to the UI (`recordInput: false` — the parent
- * log stays untouched).
+ * log stays untouched). The child session records the caller as
+ * `parentSession` with `origin: 'subagent'` and a `delegationDepth` budget
+ * (OpenCode parentID-lineage semantics), and `/btw` invoked from inside a
+ * delegated child is rejected.
  *
  * @module dsh-btw
  */
@@ -46,6 +49,13 @@ const CONTEXT_MESSAGE_LIMIT = 10
 
 /** Head+tail byte budget for one referenced-session snapshot (tuning knob). */
 export const SNAPSHOT_BYTE_BUDGET = 16 * 1024
+
+/**
+ * Delegation recursion cap (borrowed from OpenCode's `subagent_depth`, default
+ * 1): a `/btw` run from inside a delegated child would nest agents one level
+ * too deep, so any parent that is itself a child is rejected.
+ */
+export const MAX_DELEGATION_DEPTH = 1
 
 /** Fold a title from one title-observation result (fulfilled → snapshot title). */
 function titleOfObservation(result: SessionTitleObservationResult | undefined): string | undefined {
@@ -87,6 +97,17 @@ export function apply(ctx: Context) {
       if (defaultModel === undefined) return { kind: 'error', text: '/btw: no agentDefaultModel service mounted' }
       const selection = defaultModel.currentSelection()
 
+      // Depth gate (borrowed from OpenCode's subagent_depth cap): `/btw` from
+      // a delegated child would nest delegation beyond the budget.
+      const parentDepth = parent.session.header.delegationDepth ?? 0
+      if (parentDepth >= MAX_DELEGATION_DEPTH) {
+        return {
+          kind: 'error',
+          text: `/btw unavailable inside a delegated subagent (delegation depth ${String(parentDepth)}); ask from a top-level session`,
+        }
+      }
+
+
       // 1. Resolve the context source.
       const callerCwd = parent.session.header.cwd
       // Same-workspace membership gate (spec): the target must share the
@@ -111,10 +132,16 @@ export function apply(ctx: Context) {
         targetId = parsed.target.sessionId
       } else {
         // Title channel: fold titles for the whole workspace, then resolve.
-        const workspaceIds = inWorkspace.map(header => header.id)
+        // Title addressing is for human-visible conversations only: delegated
+        // subagent sessions (including prior btw children) are excluded so
+        // their derived titles cannot collide with `::` targets.
+        const addressable = new Set(
+          inWorkspace.filter(header => header.origin !== 'subagent').map(header => header.id),
+        )
+        const workspaceIds = [...addressable]
         const observations = await ctx.sessionQuery.readTitleSnapshots(workspaceIds, invocation.signal)
         const candidates: TitleCandidate[] = observations
-          .filter(result => result.status === 'fulfilled')
+          .filter(result => result.status === 'fulfilled' && addressable.has(result.sessionId))
           .map(result => ({ sessionId: result.sessionId, title: titleOfObservation(result) }))
         const resolution = resolveTitleTarget(parsed.target.title, candidates)
         if (resolution.kind === 'target') {
@@ -154,7 +181,17 @@ export function apply(ctx: Context) {
       let answer = ''
       const handle = await ctx.agents.create({
         sessionId: SessionId(`btw-${randomUUID()}`),
-        meta: { cwd: callerCwd },
+        meta: {
+          cwd: callerCwd,
+          // Lineage (borrowed from the harness child-session convention,
+          // mirroring OpenCode's parentID sessions): the btw child is recorded
+          // as a delegated descendant of the caller, one level deeper, so the
+          // recursion budget survives persistence and the session tree can
+          // present the child under its parent.
+          parentSession: parent.session.header.id,
+          origin: 'subagent',
+          delegationDepth: parentDepth + 1,
+        },
         agentOptions: { provider: selection.provider, model: selection.model },
         setup: (agentCtx) => {
           const selected: ModelSelectionRef = { current: selection, assembled: undefined }

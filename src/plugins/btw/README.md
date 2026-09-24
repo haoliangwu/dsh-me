@@ -29,5 +29,6 @@
 ## 细节
 
 - 宿主半边 `src/index.ts`（`name: dsh-btw`）注册 `commands.register({ name: 'btw', recordInput: false })`：解析 `rawInput`（`pure.ts` 纯函数）→ 命中目标通道则 `filterSessions({ kind: 'cwd' })` 做 workspace 闸 → `readSurface` 打包快照；子 agent 用 `agents.create`（镜像 `agentDefaultModel.currentSelection()`）+ followup 驱动、`whenIdle` 等待、`deriveMessages()` 取回答，`finally` 中释放句柄。
+- **子会话血缘**（借鉴 OpenCode parentID 会话树）：btw 子会话记录 `parentSession` + `origin: 'subagent'` + `delegationDepth`，会话树里挂在调用者之下，递归预算随持久化存活；委托子会话内再发 `/btw` 直接拒绝（深度闸，等价 OpenCode `subagent_depth: 1`）。
+- **标题语料卫生**：`::` 标题解析排除 `origin: 'subagent'` 的会话（含历史 btw 子会话与工具子代理），派生标题不再撞名——@ 提及精确定位不受影响。
 - 浏览器半边 `client/` 注册 `btw` 词条（zh/en）与 `conversation.chat.commandview` 键控行 → `BtwCommandCard`（MarkdownText 渲染，320px 滚动体）。
-- 已知限制：btw 子会话（`btw-<uuid>`）继承父 cwd 并持久化，会进入 `::` 标题解析语料——派生标题撞名时触发歧义报错（用 @ 精确定位即可）。
