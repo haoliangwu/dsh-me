@@ -28,6 +28,14 @@ memory_forget id=3                                          # 按 id 删除（id
 
 工具描述明确要求：只存跨会话有用的持久知识（项目事实、踩坑修复、用户偏好），不存一次性细节。`memory_write` 内容超 `maxEntryChars` 时写入即截断并标注同款 `[segment truncated: N chars omitted]`。
 
+## Memory Tab（会话头部只读可视化）
+
+- **动机。** 注入的 memory block 藏在会话上下文里，用户看不见模型到底看到了什么；排查「记忆为什么没生效 / 注入了什么」只能翻日志或用 `memory_list` 看原料。Memory tab 把**注入结果**原样摆出来——模型视角，所见即模型所得。
+- **tab 说明。** 会话头部 `conversation.view` 第三个 tab：`id: 'memory'`、order 20（Chat 0 / Trajectory 10 之后）、label "Memory"。tab 跟随当前打开的会话，不做子代理特判（子代理会话自然显示它自己的注入块）。内容**逐字节**渲染进等宽 code block——不改内容字节、不卡片化（结构化卡片留给 v2）；长行 `white-space: pre-wrap` 换行显示而非横向滚动：macOS Chromium 下自定义 `::-webkit-scrollbar` 样式条为 overlay（不手势不绘制），始终可见的横向条做不到，中途截断又零提示，比视觉重排更糟——视图是人读检查，换行不动内容字节。无记忆时显示空态文案「No memories for this session yet」。
+- **数据通道。** node 半边挂 webServer 前缀路由 `/dsh-memory`，手刻 Connection-RPC envelope（peak-rate/undo 同款 serveChannel 模式；profile 插件树用不了 `connection.rpc.handle`），endpoint `block` 入参 `{sessionId, cwd}`，现算 `assembleMemoryBlock(store.listActive(cwdToWorkspaceKey(cwd), sessionId), budget)`——与 `agent/pre-step` 注入**同一套纯函数**，输出块字节一致。client 半边 `ctx.connection.rpc.call('/dsh-memory', 'block', {sessionId, cwd})`；sessionId 来自 tab 注入入参，cwd 来自 `ctx.sessions.list` 快照。入参缺省（空 sessionId/cwd）返回 `{block: ''}`；未知 endpoint 返回标准 RPC error shape。
+- **overlay 姿态。** 视图根节点带 `data-conversation-composer-overlay`（TrajectoryView 同款官方 opt-out）：宿主隐藏宽度拖柄、`.scrollBody` 变纯裁剪盒、composer 绝对定位——tab 激活期间宽度从 Chat / Trajectory tab 调整；视图自身 `height: 100%` + `overflow: auto` 全出血自滚动。
+- **只读边界与新鲜度。** v1 纯只读：没有 forget 按钮、没有 scope 筛选、没有审计全量视图（全部 v2）。新鲜度 = tab 打开（组件挂载）拉取一次 + 手动刷新按钮；**无轮询、无推送**——跨会话变更在任何会话内监听都看不到，手动刷新语义最诚实。store 在两次 step 之间变更时，tab 显示的是「下一步将注入」的内容。node 半边 `inject` 为 `['tools', 'webServer']`。
+
 ## 数据位置与清除
 
 记忆存单一 sqlite 文件：
@@ -57,4 +65,4 @@ $DSH_HOME/dsh-memory/memory.db     # DSH_HOME 有设置时
     maxManualEntries: 20
 ```
 
-细节：宿主半边 `src/index.ts`（`name: dsh-memory`）只注入 `tools` 一个服务；注入挂在 `agent/pre-step`（读取 payload 上的 live session，无需 sessions 服务），收割与注入全部 try/catch 只记 warning 日志，绝不向宿主事件流或 waterfall 抛错。存储与纯逻辑见 `store.ts` / `pure.ts`，测试覆盖见 `pure.spec.ts` / `store.spec.ts` / `index.spec.ts`。
+细节：宿主半边 `src/index.ts`（`name: dsh-memory`）注入 `tools` + `webServer` 两个服务（后者承载 Memory tab 的 `/dsh-memory` 只读通道）；注入挂在 `agent/pre-step`（读取 payload 上的 live session，无需 sessions 服务），收割、注入与 block endpoint 全部 try/catch 只记 warning 日志，绝不向宿主事件流或 waterfall 抛错。存储与纯逻辑见 `store.ts` / `pure.ts`，tab 客户端见 `client/`（并入合并 client bundle），测试覆盖见 `pure.spec.ts` / `store.spec.ts` / `index.spec.ts` / `client/index.spec.tsx`。

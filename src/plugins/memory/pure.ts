@@ -367,11 +367,109 @@ function renderNote(row: MemoryBlockRow): string {
   return `<note id="${row.id}" scope="${scopeOfRow(row)}">${row.content}</note>`
 }
 
-/** Render one checkpoint group as a `<checkpoint>` element: its segments in segment_index order (reads like a condensed summary). */
+/** The fixed injected-block header contract lines, recognized wherever they reappear inside stored segment text (the nested-echo feedback loop). */
+const ECHO_HEADING_RE = /^##\s+Project Memory\s*$/
+const ECHO_GUIDANCE_MARKER = 'Knowledge from previous sessions'
+const ECHO_WRAPPER_OPEN = '<project-memory>'
+const ECHO_WRAPPER_CLOSE = '</project-memory>'
+
+/**
+ * Remove the FIRST strippable memory-block echo from one segment's lines and
+ * return the remaining lines, or null when no strippable echo occurs. One
+ * occurrence per call; the caller iterates to a fixpoint (nested/sibling
+ * echoes each need their own pass). Conservative contract: an occurrence
+ * strips only when the heading line is followed by the guidance line AND the
+ * heading sits inside a ``` fence (cut from the heading — or its fence opener
+ * when the fence body is only the echo — through the fence closer) or, when
+ * unfenced, `<project-memory>` … `</project-memory>` wrapper boundaries both
+ * follow the heading (cut through the closer). Prose that merely discusses
+ * "Project Memory" never matches all of that.
+ * @param lines - the segment text, split on newlines.
+ * @param fencedAt - per-line flag: the fence state when that line begins (precomputed over the same lines).
+ * @returns the post-cut lines, or null when nothing strips.
+ */
+function stripFirstEcho(lines: readonly string[], fencedAt: readonly boolean[]): string[] | null {
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!ECHO_HEADING_RE.test(lines[i])) continue
+    const guidance = lines[i + 1]
+    if (guidance === undefined || !guidance.includes(ECHO_GUIDANCE_MARKER)) continue
+    if (fencedAt[i]) {
+      // Heading inside a fence: cut through the enclosing fence's closer. The
+      // fence opener goes too when its body holds only the echo (an echo-only
+      // segment must reduce to '', never to a dangling ```).
+      let opener = -1
+      for (let k = i - 1; k >= 0; k -= 1) {
+        if (isFence(lines[k])) { opener = k; break }
+      }
+      let closer = -1
+      for (let k = i + 1; k < lines.length; k += 1) {
+        if (isFence(lines[k])) { closer = k; break }
+      }
+      const echoOnlyBody = opener !== -1 && lines.slice(opener + 1, i).every(line => line.trim() === '')
+      const start = echoOnlyBody ? opener : i
+      const end = closer === -1 ? lines.length - 1 : closer
+      return [...lines.slice(0, start), ...lines.slice(end + 1)]
+    }
+    // Unfenced heading: both wrapper boundaries must follow, else this is
+    // prose discussing the header contract — keep it.
+    const open = lines.findIndex((line, k) => k > i && line.includes(ECHO_WRAPPER_OPEN))
+    if (open === -1) continue
+    const close = lines.findIndex((line, k) => k > open && line.includes(ECHO_WRAPPER_CLOSE))
+    if (close === -1) continue
+    return [...lines.slice(0, i), ...lines.slice(close + 1)]
+  }
+  return null
+}
+
+/**
+ * Strip every nested memory-block echo from one checkpoint segment's text at
+ * render time (the feedback loop: the memory row rides the surface as a
+ * regular message, the model quotes it when asked "what's in your memory",
+ * the summarizer preserves that echo verbatim inside the next checkpoint,
+ * harvest stores it, the next injection then contains a memory-of-memories).
+ * The STORE keeps the raw text — this runs only where segments are prepared
+ * for assembly, so no data is ever lost. Detection is the fixed block header
+ * contract (`## Project Memory` + the guidance line) PLUS a fenced span or a
+ * `<project-memory>`…`</project-memory>` wrapper boundary; each occurrence is
+ * removed (fixpoint — nested echoes strip fully), and the result is trimmed.
+ * Text without a strippable echo passes through byte-identical.
+ * @param text - one stored segment's full text.
+ * @returns the text with every nested echo removed, or '' when nothing remains.
+ */
+export function stripNestedMemoryEcho(text: string): string {
+  if (!text.includes(ECHO_GUIDANCE_MARKER)) return text
+  let current = text
+  let stripped = false
+  for (;;) {
+    const lines = current.split('\n')
+    const fencedAt: boolean[] = []
+    let inFence = false
+    for (const line of lines) {
+      fencedAt.push(inFence)
+      if (isFence(line)) inFence = !inFence
+    }
+    const next = stripFirstEcho(lines, fencedAt)
+    if (next === null) break
+    current = next.join('\n')
+    stripped = true
+  }
+  return stripped ? current.trim() : text
+}
+
+/**
+ * Render one checkpoint group as a `<checkpoint>` element: its segments in
+ * segment_index order (reads like a condensed summary), each stripped of
+ * nested memory-block echoes first; a group whose segments all strip to empty
+ * renders as '' (the whole group is dropped from the block).
+ */
 function renderCheckpoint(segments: readonly MemoryBlockRow[]): string {
   const first = segments[0]
+  const bodies = segments
+    .map(segment => stripNestedMemoryEcho(segment.content))
+    .filter(content => content !== '')
+  if (bodies.length === 0) return ''
   return `<checkpoint id="${first.id}" session="${first.session_id ?? ''}" date="${dateOf(first.created_at)}">\n`
-    + segments.map(segment => segment.content).join('\n')
+    + bodies.join('\n')
     + '\n</checkpoint>'
 }
 
@@ -462,9 +560,11 @@ export function assembleMemoryBlock(rows: readonly MemoryBlockRow[], options: Me
   const dropped = (allManual.length - keptManual.length) + (orderedGroups.length - keptGroups.length)
   const pieces: string[] = [
     ...keptManual.map(renderNote),
+    // An all-echo checkpoint group renders '' (echo-only rows strip to empty)
+    // and simply vanishes from the block.
     ...keptGroups.map(group => renderCheckpoint(
       [...group.segments].sort((a, b) => a.segment_index - b.segment_index),
-    )),
+    )).filter(piece => piece !== ''),
   ]
   if (pieces.length === 0) {
     // Rows exist but every pool dropped everything (e.g. maxManualEntries 0

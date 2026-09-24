@@ -1,0 +1,113 @@
+/* dsh-memory Memory tab: plain inspection chrome — a captioned toolbar with
+   one manual refresh, a wrapping verbatim monospace block, and muted notices
+   for the loading / error / empty states. Host theme tokens only (light +
+   dark come for free); hashed class names keep host CSS from clashing with
+   the injected view (the dsh injected-class gotcha). */
+
+.root {
+  /* Composer-overlay posture (data-conversation-composer-overlay marker on
+     the root): the host no longer scrolls the view — .viewArea clips
+     (overflow: hidden), the width handles are hidden entirely, and the
+     composer seat parks absolute. So this root is full-bleed (width/height
+     100%) and is the tab's OWN vertical scroller; the monospace block wraps
+     its long lines instead of scrolling horizontally. Opaque background
+     stays: full-bleed view paints its own surface. */
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 16px 24px 24px;
+  overflow: auto;
+  background-color: var(--dsw-alias-bg-base);
+}
+
+.toolbar {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.caption {
+  min-width: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: calc(20px + var(--dsh-content-font-delta-secondary, 0px));
+}
+
+.button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: calc(26px + var(--dsh-content-font-delta, 0px));
+  padding: 0 12px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 13px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-family: inherit;
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: inherit;
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 14px 16px;
+  border: 0.5px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: calc(20px + var(--dsh-content-font-delta-secondary, 0px));
+}
+
+.notice[data-notice='error'] {
+  color: var(--dsw-alias-state-error-primary);
+  border-color: var(--dsw-alias-state-error-primary);
+}
+
+.block {
+  /* Own opaque surface: the monospace layer never shows host chrome through
+     its text. Explicit background, never inherited — the dsh injected-class
+     gotcha (host global CSS).
+
+     Wrapping posture: long lines WRAP (white-space: pre-wrap) instead of
+     scrolling horizontally. Verified on the live host: a custom
+     ::-webkit-scrollbar skin loads and scrolls, but macOS Chromium renders
+     custom-styled scrollbars as OVERLAY — the thumb paints nothing until a
+     physical gesture, so programmatic scroll + screenshot shows no bar.
+     An always-painted horizontal bar is not achievable via ::-webkit-scrollbar
+     on this platform, and mid-word clipping with zero affordance is worse
+     than reflow: this block is human inspection of the injected bytes, and
+     wrapping changes no content bytes. Keep the block's own vertical
+     overflow for tall content (overflow: auto below); horizontal needs are
+     gone with wrapping, so no scrollbar skin rules exist here anymore. */
+  flex: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 14px 24px 14px 16px;
+  border: 0.5px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  background-color: var(--dsw-alias-markdown-code-block, var(--dsw-alias-bg-subtle, #80808014));
+  color: var(--dsw-alias-label-primary);
+  font: 400 12.5px/1.6 var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
+  white-space: pre-wrap;
+  overflow: auto;
+}

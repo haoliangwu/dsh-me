@@ -89,6 +89,23 @@ interface CheckpointEvent { readonly seq: number; readonly time: number; readonl
 
 const SUMMARY_TEXT = '## Primary Request and Intent\n- ship the plugin\n\n## Key Technical Concepts\n- node:sqlite\n\n## Next Step\n- drop me'
 
+/** A polluted checkpoint summary: the compaction preserved a verbatim FENCED echo of an earlier full memory block inside a persistent section. */
+const POLLUTED_SUMMARY = [
+  '## Primary Request and Intent',
+  '- ship the feature',
+  '',
+  '## Critical Context',
+  '- remember the earlier plan:',
+  '```',
+  '## Project Memory',
+  'Knowledge from previous sessions. May be stale; correct via memory_write.',
+  '',
+  '<project-memory>',
+  '<note id="1" scope="global">old fact</note>',
+  '</project-memory>',
+  '```',
+].join('\n')
+
 const CHECKPOINT_PREAMBLE = 'This is an automatically generated compaction checkpoint.'
 
 /** A real checkpoint user/message event: compact source, framed content, sourceEventSeqs. */
@@ -135,6 +152,8 @@ interface Mounted {
   dispose: (session: { id: string; header: { cwd?: string } }) => void
   prestep: (session: FakeSession, next?: () => Promise<PreStepDecisionLike>) => Promise<PreStepDecisionLike>
   warnSpy: ReturnType<typeof vi.fn>
+  /** Prefix routes captured from the fake webServer (the Memory tab channel). */
+  routes: Array<{ kind: string; path: string; handler: (req: unknown, res: unknown) => void }>
 }
 
 /** Boot apply over a structurally-mocked cordis context and capture every seam. */
@@ -142,6 +161,7 @@ function mount(config: Record<string, unknown> = {}): Mounted {
   const listeners: Record<string, Array<(...args: unknown[]) => unknown>> = {}
   const tools: Mounted['tools'] = []
   const warnSpy = vi.fn()
+  const routes: Mounted['routes'] = []
   const ctx = {
     logger: { warn: warnSpy, info: vi.fn() },
     on: vi.fn((event: string, listener: (...args: unknown[]) => unknown) => {
@@ -151,6 +171,12 @@ function mount(config: Record<string, unknown> = {}): Mounted {
     effect: vi.fn((fn: () => unknown) => fn()),
     tools: {
       register: (def: unknown) => { tools.push(def as Mounted['tools'][number]); return () => {} },
+    },
+    webServer: {
+      register: (route: { kind: string; path: string; handler: (req: unknown, res: unknown) => void }) => {
+        routes.push(route)
+        return () => { routes.splice(routes.indexOf(route), 1) }
+      },
     },
   }
   apply(ctx as never, Config(config) as never)
@@ -174,6 +200,7 @@ function mount(config: Record<string, unknown> = {}): Mounted {
         next,
       ) ?? downstreamDecision()),
     warnSpy,
+    routes,
   }
 }
 
@@ -194,9 +221,9 @@ function downstreamMessages(decision: PreStepDecisionLike): readonly UserMessage
 }
 
 describe('plugin contract', () => {
-  it('declares the id, the strict tools-only injection, and the dual-pool config', () => {
+  it('declares the id, the tools + webServer injection, and the dual-pool config', () => {
     expect(name).toBe('dsh-memory')
-    expect(inject).toEqual(['tools'])
+    expect(inject).toEqual(['tools', 'webServer'])
     expect(Config({})).toEqual({ maxEntryChars: 2500, maxCompactionSummaries: 2, maxManualEntries: 10 })
     expect(Config({ maxEntryChars: 9000 })).toEqual({
       maxEntryChars: 9000,
@@ -359,6 +386,21 @@ describe('compaction harvest (session/event → next injection)', () => {
     expect(text).toContain('<checkpoint id="1"')
     expect(text).toContain('- ship the plugin')
     expect(text).not.toContain('- drop me')
+  })
+
+  it('strips a nested memory-block echo out of the rendered block (the store keeps the raw segment)', async () => {
+    const mounted = mount()
+    const session = fakeSession()
+    await mounted.fire('session/event', session, checkpointEvent(10, [1, 2, 3], POLLUTED_SUMMARY))
+    const decision = await mounted.prestep(session)
+    const text = (injectedMemoryMessage(decision)?.content[0] as { text: string }).text
+    // Real checkpoint content survives; the fenced echo of the whole prior
+    // block (guidance line, wrapper, note body) is gone. The only remaining
+    // `## Project Memory` is the block's own fixed header.
+    expect(text).toContain('- remember the earlier plan:')
+    expect(text).not.toContain('old fact')
+    expect(text.match(/## Project Memory/g)).toHaveLength(1)
+    expect(text.match(/<project-memory>/g)).toHaveLength(1)
   })
 
   it('does not harvest a compaction/summary-shaped event without a checkpoint user/message', async () => {
@@ -601,5 +643,154 @@ describe('tools', () => {
     await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
     const listed = await mounted.executes('memory_list', {}, { agent: { id: 's1', session } })
     expect((listed as { memories: Array<{ kind: string }> }).memories[0]?.kind).toBe('compaction')
+  })
+})
+
+// ── Memory tab data path: the /dsh-memory webServer channel ────────────────
+// The fake webServer captures the prefix route so the Connection-RPC envelope
+// is exercised against the real serveChannel with fake req/res streams. The
+// route handler fire-and-forgets serveChannel (`void`), so every invocation
+// flushes the microtask/timer queue before reading the response.
+
+/** Fake IncomingMessage speaking the async-iterable chunk contract serveChannel reads. A Buffer body is yielded raw (malformed-JSON test). */
+function reqOf(method: string, url: string, body: unknown, contentType = 'application/json') {
+  const json = Buffer.isBuffer(body) ? body : Buffer.from(JSON.stringify(body))
+  return {
+    method,
+    url,
+    headers: { 'content-type': contentType },
+    once: () => {},
+    socket: { once: () => {} },
+    [Symbol.asyncIterator]: async function* () { yield json },
+  } as unknown as import('node:http').IncomingMessage
+}
+
+/** Fake ServerResponse capturing status + body. */
+function resOf() {
+  let status = 0
+  let body = ''
+  return {
+    get statusCode() { return status },
+    get body() { return body },
+    setHeader: () => {},
+    writeHead: (code: number) => { status = code },
+    end: (chunk?: unknown) => { body = String(chunk ?? '') },
+  } as unknown as import('node:http').ServerResponse & { statusCode: number; body: string }
+}
+
+/** Await the fire-and-forget route handler plus its queued continuation. */
+async function invoke(handler: (req: unknown, res: unknown) => void, req: unknown, res: unknown): Promise<void> {
+  handler(req, res)
+  await new Promise((resolve) => { setTimeout(resolve, 0) })
+}
+
+/** POST one client-request envelope for endpoint `name` and return the 200 server-response JSON. */
+async function askBlock(handler: (req: unknown, res: unknown) => void, name: string, payload: unknown) {
+  const res = resOf()
+  await invoke(handler,
+    reqOf('POST', `/dsh-memory/${name}`, { type: 'client-request', rpcId: 'r1', method: name, payload }),
+    res,
+  )
+  return { res, message: JSON.parse(res.body) as { type: string; rpcId: string; result: { ok: boolean; value?: { block: string }; error?: { code: string; message: string } } } }
+}
+
+describe('webServer channel (Memory tab)', () => {
+  beforeEach(() => {
+    process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-memory-test-'))
+  })
+  afterEach(() => {
+    if (process.env.DSH_HOME !== undefined) rmSync(process.env.DSH_HOME, { recursive: true, force: true })
+    delete process.env.DSH_HOME
+  })
+
+  it('mounts the /dsh-memory prefix route inside the effect', () => {
+    const mounted = mount()
+    expect(mounted.routes).toHaveLength(1)
+    expect(mounted.routes[0]?.kind).toBe('prefix')
+    expect(mounted.routes[0]?.path).toBe('/dsh-memory')
+  })
+
+  it('serves the block endpoint byte-identical to what the pre-step injection injects', async () => {
+    const mounted = mount()
+    const session = fakeSession('/work/a', 's1')
+    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    await mounted.executes('memory_write', { content: 'user prefers terse replies', scope: 'global' }, { agent: { id: 's1', session } })
+    // The pre-step's rendered row: header + '\n\n' + block — the exact bytes the model sees.
+    const decision = await mounted.prestep(session)
+    const text = (injectedMemoryMessage(decision)?.content[0] as { text: string }).text
+    const injectedBlock = text.slice(MEMORY_HEADER_LINE.length + 2)
+    const { res, message } = await askBlock(mounted.routes[0]?.handler as (req: unknown, res: unknown) => void, 'block', { sessionId: 's1', cwd: '/work/a' })
+    expect(res.statusCode).toBe(200)
+    expect(message.type).toBe('server-response')
+    expect(message.rpcId).toBe('r1')
+    expect(message.result.ok).toBe(true)
+    expect(message.result.value?.block).toBe(injectedBlock)
+    expect(message.result.value?.block).toContain('<note id=')
+    expect(message.result.value?.block).toContain('- ship the plugin')
+  })
+
+  it('serves no nested memory echoes through the block endpoint (same strip as the injection)', async () => {
+    const mounted = mount()
+    const session = fakeSession('/work/a', 's1')
+    await mounted.fire('session/event', session, checkpointEvent(10, [1], POLLUTED_SUMMARY))
+    const { res, message } = await askBlock(mounted.routes[0]?.handler as (req: unknown, res: unknown) => void, 'block', { sessionId: 's1', cwd: '/work/a' })
+    expect(res.statusCode).toBe(200)
+    expect(message.result.ok).toBe(true)
+    const block = message.result.value?.block ?? ''
+    expect(block).toContain('- remember the earlier plan:')
+    expect(block).not.toContain('old fact')
+    expect(block.match(/## Project Memory/g)).toHaveLength(1)
+    expect(block.match(/<project-memory>/g)).toHaveLength(1)
+  })
+
+  it('answers an empty block for empty sessionId/cwd (and for a missing payload)', async () => {
+    const mounted = mount()
+    const session = fakeSession('/work/a', 's1')
+    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    const handler = mounted.routes[0]?.handler as (req: unknown, res: unknown) => void
+    const empty = await askBlock(handler, 'block', { sessionId: '', cwd: '' })
+    expect(empty.message.result).toEqual({ ok: true, value: { block: '' } })
+    const missing = await askBlock(handler, 'block', {})
+    expect(missing.message.result).toEqual({ ok: true, value: { block: '' } })
+  })
+
+  it('answers the RPC error shape for an unknown endpoint', async () => {
+    const mounted = mount()
+    const { res, message } = await askBlock(mounted.routes[0]?.handler as (req: unknown, res: unknown) => void, 'nope', {})
+    expect(res.statusCode).toBe(200)
+    expect(message.result.ok).toBe(false)
+    expect(message.result.error?.code).toBe('internal')
+    expect(message.result.error?.message).toContain('unknown endpoint nope')
+  })
+
+  it('404s a non-POST request and an unknown endpoint segment', async () => {
+    const mounted = mount()
+    const handler = mounted.routes[0]?.handler as (req: unknown, res: unknown) => void
+    const res = resOf()
+    await invoke(handler, reqOf('GET', '/dsh-memory/block', {}), res)
+    expect(res.statusCode).toBe(404)
+    const res2 = resOf()
+    await invoke(handler, reqOf('POST', '/dsh-memory/../etc', {}), res2)
+    expect(res2.statusCode).toBe(404)
+  })
+
+  it('415s a non-JSON content type, 400s a malformed body, and rejects a mismatched method', async () => {
+    const mounted = mount()
+    const handler = mounted.routes[0]?.handler as (req: unknown, res: unknown) => void
+    const res = resOf()
+    await invoke(handler, reqOf('POST', '/dsh-memory/block', {}, 'text/plain'), res)
+    expect(res.statusCode).toBe(415)
+    const res2 = resOf()
+    await invoke(handler, reqOf('POST', '/dsh-memory/block', Buffer.from('not json')), res2)
+    expect(res2.statusCode).toBe(400)
+    const res3 = resOf()
+    await invoke(handler,
+      reqOf('POST', '/dsh-memory/block', { type: 'client-request', rpcId: 'r1', method: 'bogus', payload: {} }),
+      res3,
+    )
+    expect(res3.statusCode).toBe(200)
+    const message = JSON.parse(res3.body) as { result: { ok: boolean; error?: { code: string } } }
+    expect(message.result.ok).toBe(false)
+    expect(message.result.error?.code).toBe('gateway/bad-request')
   })
 })

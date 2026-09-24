@@ -14,13 +14,20 @@
  * `memory_forget` give the agent an explicit memory API. Harvest and
  * injection are fully fault-isolated: a failure only logs a warning, never
  * reaches the host event stream or the agent waterfall.
+ *
+ * The browser half's read-only Memory tab is served over a webServer prefix
+ * route `/dsh-memory` (Connection-RPC envelope, endpoint `block`): the SAME
+ * pure functions the pre-step injection uses recompute the block per request,
+ * so the tab shows byte-identical content — the model's-eye view.
  */
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { Context } from '@deepseek-ai/cordis'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
+import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { Session, SessionSeq } from '@deepseek-ai/dsh-session'
 import z from '@deepseek-ai/schemastery'
 import {
@@ -40,13 +47,15 @@ import { installMemoryTools } from './tools.ts'
 export const name = MEMORY_PLUGIN
 
 /**
- * Required services: the tool registry only. The `agent/pre-step` listener
- * needs no injected service — it reads the live session off the pre-step
- * payload (`payload.agent.session`) and appends through it, and the cordis
- * event bus delivers the waterfall (spec decision 19-style strictness; the
- * retired `systemPrompt` service is no longer consumed).
+ * Required services: the tool registry plus the web router. The
+ * `agent/pre-step` listener needs no injected service — it reads the live
+ * session off the pre-step payload (`payload.agent.session`) and appends
+ * through it, and the cordis event bus delivers the waterfall (spec
+ * decision 19-style strictness; the retired `systemPrompt` service is no
+ * longer consumed). `webServer` carries the Memory tab's read-only `/dsh-memory`
+ * channel (spec — static inject, registered inside the single `ctx.effect`).
  */
-export const inject = ['tools']
+export const inject = ['tools', 'webServer']
 
 /** Plugin config: the three dual-pool/envelope knobs (spec — the old char budget is retired). */
 export interface Config {
@@ -72,6 +81,12 @@ export const Config = z.object({
 /** The store file's subdirectory below the dsh home. */
 export const MEMORY_DIR_RELATIVE = 'dsh-memory'
 export const MEMORY_FILE = 'memory.db'
+
+/** RPC channel owned by this plugin (the Memory tab's data path). */
+const CHANNEL = '/dsh-memory'
+
+/** Endpoint under {@link CHANNEL}: `{sessionId, cwd}` → `{block}` (the verbatim injected block). */
+const ENDPOINT_BLOCK = 'block'
 
 /**
  * Structural live session as the pre-step reads it: the harness `Agent`
@@ -183,9 +198,12 @@ export function planMemoryInjection(store: MemoryStore, session: LiveSessionLike
   return { kind: 'replace', message, rowSeq: row.seq }
 }
 
-/** Structural plugin context face. */
+/** Structural plugin context face (the webServer slice mirrors how peak-rate consumes it). */
 interface MemoryCtx {
   tools: { register(definition: unknown): () => void }
+  webServer: {
+    register(route: { kind: 'prefix'; path: string; handler: (req: IncomingMessage, res: ServerResponse) => void }): () => void
+  }
   on(event: 'session/event', listener: (session: SessionLike, event: CheckpointEventLike) => void): () => void
   on(event: 'session/disposed', listener: (session: SessionLike) => void): () => void
   on(event: 'agent/pre-step', listener: (payload: PreStepPayloadLike, next: () => Promise<PreStepDecisionLike>) => Promise<PreStepDecisionLike>): () => void
@@ -335,6 +353,47 @@ export function apply(ctx: Context, config: Config): void {
     // the persisted row, replaced in place).
     disposers.push(installMemoryTools(scoped.tools, store, budget.maxEntryChars))
 
+    // The Memory tab's data path: a plain webServer prefix route speaking the
+    // Connection-RPC client-request/server-response envelope (peak-rate/
+    // undo/shortcuts serveChannel pattern — `connection.rpc.handle()` is
+    // unreachable from the profile plugin tree). Endpoint `block` recomputes
+    // the block through the SAME pure functions the pre-step injection uses
+    // (`assembleMemoryBlock` over `store.listActive`), so the tab renders
+    // byte-identical content to what the model sees. Empty sessionId/cwd
+    // answer `{block: ''}`; an unknown endpoint answers the RPC error shape;
+    // an assembly/store fault is contained to a warning + error result —
+    // same harvest discipline, never a thrown request.
+    disposers.push(scoped.webServer.register({
+      kind: 'prefix',
+      path: CHANNEL,
+      handler: (req, res) => {
+        void serveChannel(req, res, CHANNEL, (endpoint, payload) => {
+          if (endpoint !== ENDPOINT_BLOCK) {
+            return Promise.resolve({
+              ok: false as const,
+              error: { code: 'internal', message: `unknown endpoint ${endpoint}`, details: {} },
+            })
+          }
+          try {
+            const { sessionId, cwd } = (payload ?? {}) as { sessionId?: unknown; cwd?: unknown }
+            if (typeof sessionId !== 'string' || sessionId === ''
+              || typeof cwd !== 'string' || cwd === '') {
+              return Promise.resolve({ ok: true as const, value: { block: '' } })
+            }
+            const block = assembleMemoryBlock(store.listActive(cwdToWorkspaceKey(cwd), sessionId), budget)
+            return Promise.resolve({ ok: true as const, value: { block } })
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error)
+            ctx.logger.warn(`[dsh-memory] block endpoint failed: ${reason}`)
+            return Promise.resolve({
+              ok: false as const,
+              error: { code: 'internal', message: `block assembly failed: ${reason}`, details: {} },
+            })
+          }
+        })
+      },
+    }))
+
     // Fire-and-forget harvest: every exception is contained to a warning log,
     // never thrown into the compaction transaction (spec decision 15).
     disposers.push(scoped.on('session/event', (session, event) => {
@@ -367,4 +426,90 @@ export function apply(ctx: Context, config: Config): void {
       }
     }
   })
+}
+
+/**
+ * Serve one Connection-RPC channel over a plain webServer route, mirroring
+ * dsh-client-connection's rpcFetchHandler semantics (POST-only, JSON
+ * client-request envelope, server-response envelope out) so the browser-side
+ * `connection.rpc.call()` keeps working unchanged. Copied verbatim from the
+ * peak-rate/undo/shortcuts serveChannel (profile plugin trees cannot use
+ * `connection.rpc.handle`; each entry keeps its own copy).
+ */
+async function serveChannel(
+  req: IncomingMessage,
+  res: ServerResponse,
+  channel: string,
+  handler: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<RpcResult<unknown>>,
+): Promise<void> {
+  const writeJson = (status: number, body: unknown): void => {
+    const bytes = Buffer.from(JSON.stringify(body))
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.setHeader('Content-Length', String(bytes.length))
+    res.writeHead(status)
+    res.end(bytes)
+  }
+  const endpoint = endpointFromPath(channel, req.url ?? '/')
+  if (req.method !== 'POST' || endpoint === undefined) {
+    res.writeHead(404)
+    res.end('not found')
+    return
+  }
+  if (req.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
+    res.writeHead(415)
+    res.end('content type must be application/json')
+    return
+  }
+  let body: unknown
+  try {
+    const chunks: Buffer[] = []
+    for await (const chunk of req) {
+      const part = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string)
+      chunks.push(part)
+    }
+    body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+  } catch {
+    res.writeHead(400)
+    res.end('body is not JSON')
+    return
+  }
+  const message = (body ?? {}) as { type?: unknown; rpcId?: unknown; method?: unknown; payload?: unknown }
+  const respond = (result: RpcResult<unknown>): void =>
+    writeJson(200, { type: 'server-response', rpcId: typeof message.rpcId === 'string' ? message.rpcId : '', result })
+  if (typeof body !== 'object' || body === null || message.type !== 'client-request'
+    || typeof message.rpcId !== 'string' || typeof message.method !== 'string') {
+    respond({
+      ok: false,
+      error: { code: 'gateway/bad-request', message: 'invalid client-request message', details: {} },
+    } as unknown as RpcResult<unknown>)
+    return
+  }
+  if (message.method !== endpoint) {
+    respond({
+      ok: false,
+      error: {
+        code: 'gateway/bad-request',
+        message: `method ${JSON.stringify(message.method)} does not match endpoint ${JSON.stringify(endpoint)}`,
+        details: {},
+      },
+    } as unknown as RpcResult<unknown>)
+    return
+  }
+  const controller = new AbortController()
+  req.once('aborted', () => controller.abort())
+  req.socket.once('close', () => controller.abort())
+  try {
+    respond(await handler(endpoint, message.payload, controller.signal))
+  } catch (error) {
+    res.writeHead(500)
+    res.end(`handler failure: ${String(error)}`)
+  }
+}
+
+/** Extract and validate the endpoint segment below the channel prefix. */
+function endpointFromPath(channel: string, pathname: string): string | undefined {
+  if (!pathname.startsWith(`${channel}/`)) return undefined
+  const endpoint = pathname.slice(channel.length + 1)
+  if (endpoint.split('/').some((segment) => segment === '' || segment === '.' || segment === '..' || !/^[A-Za-z0-9_$.-]+$/.test(segment))) return undefined
+  return endpoint
 }

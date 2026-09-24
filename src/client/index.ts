@@ -12,6 +12,7 @@ import { apply as applyBtw, inject as btwInject } from '../plugins/btw/client/in
 import { apply as applyReference, inject as referenceInject } from '../plugins/reference/client/index.ts'
 import { apply as applyUndo, inject as undoInject } from '../plugins/undo/client/index.ts'
 import { apply as applyShortcuts, inject as shortcutsInject } from '../plugins/shortcuts/client/index.ts'
+import { apply as applyMemory, inject as memoryInject } from '../plugins/memory/client/index.ts'
 
 /** Required services: the union of every aggregated client half. */
 export const inject = [...new Set([
@@ -21,6 +22,7 @@ export const inject = [...new Set([
   ...referenceInject,
   ...undoInject,
   ...shortcutsInject,
+  ...memoryInject,
 ])]
 
 /**
@@ -34,4 +36,5 @@ export function apply(ctx: Context): void {
   applyReference(ctx)
   applyUndo(ctx)
   applyShortcuts(ctx)
+  applyMemory(ctx)
 }

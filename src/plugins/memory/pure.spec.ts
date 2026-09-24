@@ -13,6 +13,7 @@ import {
   normalizeBlockWhitespace,
   PERSISTENT_SECTIONS,
   segmentSummary,
+  stripNestedMemoryEcho,
   VOLATILE_SECTIONS,
   type MemoryBlockRow,
   type MemoryBudgetOptions,
@@ -57,6 +58,18 @@ function segment(id: number, seq: number, content: string, segmentIndex: number,
 
 /** The default dual-pool budget for render tests (large enough to never trim). */
 const ROOMY_BUDGET: MemoryBudgetOptions = { maxEntryChars: 2500, maxCompactionSummaries: 10, maxManualEntries: 10 }
+
+/** The wild polluted-segment shape: a whole prior memory block verbatim inside one ``` fence. */
+const FENCED_ECHO = [
+  '```',
+  '## Project Memory',
+  'Knowledge from previous sessions. May be stale; correct via memory_write.',
+  '',
+  '<project-memory>',
+  '<note id="1" scope="global">old fact</note>',
+  '</project-memory>',
+  '```',
+].join('\n')
 
 describe('filterSummarySections (harvest section filtering)', () => {
   it('keeps the five persistent sections and drops the three volatile ones from a wellformed 8-section summary', () => {
@@ -396,6 +409,93 @@ describe('assembleMemoryBlock (dual-pool injection)', () => {
     const compactionOnly = block(oldGroup, { ...ROOMY_BUDGET, maxCompactionSummaries: 0 })
     expect(compactionOnly).not.toBe('')
     expect(compactionOnly).toContain('(1 older memories omitted)')
+  })
+
+  it('strips a nested memory-block echo from a checkpoint segment at render, drops an echo-only group whole', () => {
+    const polluted = [
+      segment(7, 20, '- remember the earlier plan:\n' + FENCED_ECHO, 0, 300, 'Critical Context'),
+      segment(8, 30, FENCED_ECHO, 0, 400, 'Critical Context'),
+    ]
+    const output = assembleMemoryBlock(polluted, ROOMY_BUDGET)
+    expect(output).toContain('- remember the earlier plan:')
+    expect(output).not.toContain('old fact')
+    // Group 30 is echo-only: its `<checkpoint>` vanishes with the strip.
+    expect(output.match(/<checkpoint/g)).toHaveLength(1)
+    expect(output).toContain('<checkpoint id="7"')
+  })
+})
+
+describe('stripNestedMemoryEcho (render-time nested-echo removal; store keeps raw text)', () => {
+  it('strips a fenced echo (the live polluted shape) and keeps the surrounding segment text', () => {
+    const text = ['- keep this bullet', FENCED_ECHO, '- and this bullet'].join('\n')
+    expect(stripNestedMemoryEcho(text)).toBe('- keep this bullet\n- and this bullet')
+  })
+
+  it('strips an unfenced echo through its </project-memory> boundary, keeping lead and tail', () => {
+    const text = [
+      'lead bullet',
+      '',
+      '## Project Memory',
+      'Knowledge from previous sessions. May be stale; correct via memory_write.',
+      '',
+      '<project-memory>',
+      '<note id="2" scope="global">old fact</note>',
+      '</project-memory>',
+      'tail bullet',
+    ].join('\n')
+    expect(stripNestedMemoryEcho(text)).toBe('lead bullet\n\ntail bullet')
+  })
+
+  it('strips multiple sibling echoes, each with its own pass', () => {
+    const text = [FENCED_ECHO, 'between the echoes', FENCED_ECHO].join('\n')
+    expect(stripNestedMemoryEcho(text)).toBe('between the echoes')
+  })
+
+  it('never mutilates prose that merely discusses Project Memory (no fence, no wrapper)', () => {
+    const prose = [
+      'The compact summary re-mentioned Project Memory behavior in passing.',
+      '## Project Memory',
+      'Knowledge from previous sessions is the injected header contract.',
+      'No wrapper or fence follows this heading in the prose.',
+    ].join('\n')
+    expect(stripNestedMemoryEcho(prose)).toBe(prose)
+  })
+
+  it('returns empty for an echo-only segment', () => {
+    expect(stripNestedMemoryEcho(FENCED_ECHO)).toBe('')
+  })
+
+  it('fully strips a nested-in-nested echo (echo inside echo) down to no echo remnants', () => {
+    const nested = [
+      '```',
+      '## Project Memory',
+      'Knowledge from previous sessions. May be stale; correct via memory_write.',
+      '',
+      '<project-memory>',
+      '<checkpoint id="7" session="s1" date="1970-01-01">',
+      '```',
+      '## Project Memory',
+      'Knowledge from previous sessions. May be stale; correct via memory_write.',
+      '',
+      '<project-memory>',
+      '<note id="7" scope="global">deep fact</note>',
+      '</project-memory>',
+      '```',
+      '</checkpoint>',
+      '</project-memory>',
+      '```',
+      'kept tail',
+    ].join('\n')
+    const stripped = stripNestedMemoryEcho(nested)
+    expect(stripped).not.toContain('## Project Memory')
+    expect(stripped).not.toContain('Knowledge from previous sessions')
+    expect(stripped).not.toContain('<note')
+    expect(stripped).toContain('kept tail')
+  })
+
+  it('leaves ordinary segment text byte-identical (no echo contract present)', () => {
+    const plain = '## Files and Code\n- src/plugins/memory/pure.ts: section filter'
+    expect(stripNestedMemoryEcho(plain)).toBe(plain)
   })
 })
 
