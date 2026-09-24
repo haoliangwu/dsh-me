@@ -526,16 +526,39 @@ export function normalizeBlockWhitespace(text: string): string {
  * the OLDEST end, and the dropped count is annotated after the wrapper. The
  * rendered byte stream is whitespace-normalized (fence interiors untouched);
  * the digest later runs over this exact text.
+ *
+ * Current-session compaction exclusion (spec — post-compact self-duplication):
+ * when `currentSessionId` is given, every compaction row whose `session_id`
+ * equals it is filtered out BEFORE any pool selection, because that session's
+ * newest checkpoint replacement group is by definition still on its own
+ * surface — injecting it again would hand the model the same summary twice.
+ * The exclusion runs first, so the freed compaction pool slots refill with
+ * the next-oldest ELIGIBLE group (newest first among eligible; no budget is
+ * wasted on excluded rows), and an exclusion that empties the row set returns
+ * '' (the never-inject path). Manual rows are NEVER excluded — a session's
+ * own scope notes must keep injecting while the session lives. Fork caveat
+ * (documented in the spec): a fork inherits the parent surface but keeps the
+ * original session_id, so the inherited checkpoint group stays visible.
  * @param rows - active store rows (any order; grouping/ordering happens here).
  * @param options - the dual-pool budget.
+ * @param currentSessionId - the session the block is assembled for; its own
+ * compaction rows are excluded (undefined → no exclusion).
  * @returns the rendered block, or '' for an empty store.
  */
-export function assembleMemoryBlock(rows: readonly MemoryBlockRow[], options: MemoryBudgetOptions): string {
+export function assembleMemoryBlock(
+  rows: readonly MemoryBlockRow[],
+  options: MemoryBudgetOptions,
+  currentSessionId?: string,
+): string {
   if (rows.length === 0) return ''
+  const eligible = currentSessionId === undefined
+    ? rows
+    : rows.filter(row => !(row.kind === 'compaction' && row.session_id === currentSessionId))
+  if (eligible.length === 0) return ''
   // Manual pool admission: the newest maxManualEntries across ALL scopes
   // (global-time ranked). The kept set is THEN rendered in scope-tier order
   // (global → workspace → session), newest first within each tier.
-  const allManual = rows.filter(row => row.kind === 'manual')
+  const allManual = eligible.filter(row => row.kind === 'manual')
   const admittedManual = allManual
     .sort((a, b) => b.created_at - a.created_at)
     .slice(0, Math.max(0, options.maxManualEntries))
@@ -547,7 +570,7 @@ export function assembleMemoryBlock(rows: readonly MemoryBlockRow[], options: Me
   })
   // Compaction pool: whole groups keyed by source_event_seq, newest group first.
   const groups = new Map<number, MemoryBlockRow[]>()
-  for (const row of rows) {
+  for (const row of eligible) {
     if (row.kind !== 'compaction' || row.source_event_seq === null) continue
     const group = groups.get(row.source_event_seq)
     if (group === undefined) groups.set(row.source_event_seq, [row])
@@ -569,7 +592,8 @@ export function assembleMemoryBlock(rows: readonly MemoryBlockRow[], options: Me
   if (pieces.length === 0) {
     // Rows exist but every pool dropped everything (e.g. maxManualEntries 0
     // over a manual-only store): still render the header + omission
-    // annotation — '' is reserved for the truly-empty store ("never inject").
+    // annotation — '' is reserved for the empty store and for a fully
+    // excluded row set ("never inject").
     let text = `${BLOCK_HEADER}${BLOCK_FOOTER}`
     if (dropped > 0) text += `\n(${dropped} older memories omitted)`
     return normalizeBlockWhitespace(text)

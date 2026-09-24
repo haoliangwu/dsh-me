@@ -411,6 +411,48 @@ describe('assembleMemoryBlock (dual-pool injection)', () => {
     expect(compactionOnly).toContain('(1 older memories omitted)')
   })
 
+  it('excludes the current session\'s own compaction groups but keeps other sessions\' groups', () => {
+    const own = [segment(4, 10, '## Primary Request and Intent\n- own goal', 0, 200, 'Primary Request and Intent')]
+    const other = [
+      { ...segment(7, 20, '## Primary Request and Intent\n- other goal', 0, 300, 'Primary Request and Intent'), session_id: 's2' },
+    ]
+    const output = block([...own, ...other], ROOMY_BUDGET, 's1')
+    expect(output).toContain('- other goal')
+    expect(output).not.toContain('- own goal')
+    expect(output.match(/<checkpoint/g)).toHaveLength(1)
+  })
+
+  it('never excludes manual rows — the current session\'s own session-scope notes keep injecting', () => {
+    const own = [segment(4, 10, '## Primary Request and Intent\n- own goal', 0, 200, 'Primary Request and Intent')]
+    const ownSessionNote = row({ id: 3, kind: 'manual', content: 'own session note', created_at: 102, session_id: 's1' })
+    const output = block([...own, ownSessionNote], ROOMY_BUDGET, 's1')
+    expect(output).toContain('own session note')
+    expect(output).not.toContain('- own goal')
+  })
+
+  it('refills a freed compaction slot with the next-oldest ELIGIBLE group when the newest is excluded (budget not wasted)', () => {
+    const ownNewest = [segment(9, 30, '## Primary Request and Intent\n- own newest', 0, 400, 'Primary Request and Intent')]
+    const otherNewer = [
+      { ...segment(7, 20, '## Primary Request and Intent\n- other newer', 0, 300, 'Primary Request and Intent'), session_id: 's2' },
+    ]
+    const otherOlder = [
+      { ...segment(4, 10, '## Primary Request and Intent\n- other older', 0, 200, 'Primary Request and Intent'), session_id: 's2' },
+    ]
+    const output = block([...ownNewest, ...otherNewer, ...otherOlder], { ...ROOMY_BUDGET, maxCompactionSummaries: 1 }, 's1')
+    // Own newest is excluded BEFORE pool selection; the single slot goes to the
+    // newest eligible group. The excluded row is not an "older memory" — only
+    // the store-level drop (otherOlder) counts in the annotation.
+    expect(output).toContain('- other newer')
+    expect(output).not.toContain('- own newest')
+    expect(output).not.toContain('- other older')
+    expect(output).toContain('(1 older memories omitted)')
+  })
+
+  it('returns empty when the exclusion empties the row set (the never-inject path)', () => {
+    const own = [segment(4, 10, '## Primary Request and Intent\n- own goal', 0, 200, 'Primary Request and Intent')]
+    expect(block(own, ROOMY_BUDGET, 's1')).toBe('')
+  })
+
   it('strips a nested memory-block echo from a checkpoint segment at render, drops an echo-only group whole', () => {
     const polluted = [
       segment(7, 20, '- remember the earlier plan:\n' + FENCED_ECHO, 0, 300, 'Critical Context'),

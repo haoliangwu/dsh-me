@@ -247,7 +247,8 @@ describe('pre-step injection (agent/pre-step)', () => {
   it('appends one plugin-sourced user message with a digest on a fresh session with a non-empty block', async () => {
     const mounted = mount()
     const session = fakeSession()
-    await mounted.fire('session/event', session, checkpointEvent(10, [1, 2, 3], SUMMARY_TEXT))
+    const sibling = fakeSession('/work/a', 's2')
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1, 2, 3], SUMMARY_TEXT))
     const decision = await mounted.prestep(session)
     const memory = injectedMemoryMessage(decision)
     expect(memory).toBeDefined()
@@ -266,7 +267,8 @@ describe('pre-step injection (agent/pre-step)', () => {
   it('keeps the downstream messages (the actual user prompt) intact alongside the memory message', async () => {
     const mounted = mount()
     const session = fakeSession()
-    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    const sibling = fakeSession('/work/a', 's2')
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1], SUMMARY_TEXT))
     const decision = await mounted.prestep(session)
     expect(downstreamMessages(decision)).toHaveLength(1)
     expect(downstreamMessages(decision)[0]?.id).toBe('u-claim')
@@ -275,7 +277,8 @@ describe('pre-step injection (agent/pre-step)', () => {
   it('does nothing when the surfaced row carries the same digest (byte-stable no-op)', async () => {
     const mounted = mount()
     const session = fakeSession()
-    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    const sibling = fakeSession('/work/a', 's2')
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1], SUMMARY_TEXT))
     const first = await mounted.prestep(session)
     const memory = injectedMemoryMessage(first)
     expect(memory).toBeDefined()
@@ -320,8 +323,9 @@ describe('pre-step injection (agent/pre-step)', () => {
   it('takes effect between steps: a store write after a fresh append replaces the row on the next pre-step', async () => {
     const mounted = mount()
     const session = fakeSession()
+    const sibling = fakeSession('/work/a', 's2')
     // Step 1: no row yet → the decision carries the memory message.
-    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1], SUMMARY_TEXT))
     const first = await mounted.prestep(session)
     const firstMemory = injectedMemoryMessage(first)
     expect(firstMemory).toBeDefined()
@@ -342,7 +346,8 @@ describe('pre-step injection (agent/pre-step)', () => {
   it('swallows internal handler failures: the waterfall still runs and the decision returns', async () => {
     const mounted = mount()
     const session = fakeSession()
-    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    const sibling = fakeSession('/work/a', 's2')
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1], SUMMARY_TEXT))
     // A broken log read (or a store fault — same try block) must never break the waterfall.
     session.snapshotEvents = () => { throw new Error('log read failed') }
     const decision = await mounted.prestep(session)
@@ -361,7 +366,8 @@ describe('pre-step injection (agent/pre-step)', () => {
   it('returns a rejected downstream decision untouched (never overrides the harness)', async () => {
     const mounted = mount()
     const session = fakeSession()
-    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    const sibling = fakeSession('/work/a', 's2')
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1], SUMMARY_TEXT))
     const decision = await mounted.prestep(session, () => Promise.resolve({ kind: 'reject' }))
     expect(decision).toEqual({ kind: 'reject' })
   })
@@ -379,7 +385,8 @@ describe('compaction harvest (session/event → next injection)', () => {
   it('stores a compaction checkpoint into the injected block, filtered to persistent sections', async () => {
     const mounted = mount()
     const session = fakeSession()
-    await mounted.fire('session/event', session, checkpointEvent(10, [1, 2, 3], SUMMARY_TEXT))
+    const sibling = fakeSession('/work/a', 's2')
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1, 2, 3], SUMMARY_TEXT))
     const decision = await mounted.prestep(session)
     const text = (injectedMemoryMessage(decision)?.content[0] as { text: string }).text
     expect(text).toContain('## Project Memory')
@@ -391,7 +398,8 @@ describe('compaction harvest (session/event → next injection)', () => {
   it('strips a nested memory-block echo out of the rendered block (the store keeps the raw segment)', async () => {
     const mounted = mount()
     const session = fakeSession()
-    await mounted.fire('session/event', session, checkpointEvent(10, [1, 2, 3], POLLUTED_SUMMARY))
+    const sibling = fakeSession('/work/a', 's2')
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1, 2, 3], POLLUTED_SUMMARY))
     const decision = await mounted.prestep(session)
     const text = (injectedMemoryMessage(decision)?.content[0] as { text: string }).text
     // Real checkpoint content survives; the fenced echo of the whole prior
@@ -425,8 +433,9 @@ describe('compaction harvest (session/event → next injection)', () => {
   it('is idempotent: replaying the same event stores nothing new', async () => {
     const mounted = mount()
     const session = fakeSession()
-    await mounted.fire('session/event', session, checkpointEvent(10, [1, 2, 3], SUMMARY_TEXT))
-    await mounted.fire('session/event', session, checkpointEvent(10, [1, 2, 3], SUMMARY_TEXT))
+    const sibling = fakeSession('/work/a', 's2')
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1, 2, 3], SUMMARY_TEXT))
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1, 2, 3], SUMMARY_TEXT))
     const decision = await mounted.prestep(session)
     const text = (injectedMemoryMessage(decision)?.content[0] as { text: string }).text
     expect(text.match(/<checkpoint/g)).toHaveLength(1)
@@ -435,8 +444,9 @@ describe('compaction harvest (session/event → next injection)', () => {
   it('marks the older checkpoint superseded when a later compaction shadows its surface seq', async () => {
     const mounted = mount()
     const session = fakeSession()
-    await mounted.fire('session/event', session, checkpointEvent(5, [1, 3, 2, 4], '## Primary Request and Intent\n- first checkpoint'))
-    await mounted.fire('session/event', session, checkpointEvent(9, [5, 8, 6, 7, 5], '## Primary Request and Intent\n- consolidated checkpoint'))
+    const sibling = fakeSession('/work/a', 's2')
+    await mounted.fire('session/event', sibling, checkpointEvent(5, [1, 3, 2, 4], '## Primary Request and Intent\n- first checkpoint'))
+    await mounted.fire('session/event', sibling, checkpointEvent(9, [5, 8, 6, 7, 5], '## Primary Request and Intent\n- consolidated checkpoint'))
     const decision = await mounted.prestep(session)
     const text = (injectedMemoryMessage(decision)?.content[0] as { text: string }).text
     expect(text).toContain('- consolidated checkpoint')
@@ -454,11 +464,23 @@ describe('compaction harvest (session/event → next injection)', () => {
     expect(text).toContain('- ship the plugin')
   })
 
+  it('never injects the session\'s own fresh compaction summary (post-compact self-duplication rule)', async () => {
+    const mounted = mount()
+    const session = fakeSession('/work/a', 's1')
+    await mounted.fire('session/event', session, checkpointEvent(10, [1, 2, 3], SUMMARY_TEXT))
+    const decision = await mounted.prestep(session)
+    // The replacement row is still on S's own surface — the assembled block is
+    // empty after the exclusion, so the never-inject path applies.
+    expect(injectedMemoryMessage(decision)).toBeUndefined()
+    expect(session.appends).toEqual([])
+  })
+
   it('drops the oldest checkpoint group under maxCompactionSummaries (whole-group admission)', async () => {
     const mounted = mount({ maxCompactionSummaries: 1 })
     const session = fakeSession()
-    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
-    await mounted.fire('session/event', session, checkpointEvent(20, [11], '## Primary Request and Intent\n- newer checkpoint content'))
+    const sibling = fakeSession('/work/a', 's2')
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1], SUMMARY_TEXT))
+    await mounted.fire('session/event', sibling, checkpointEvent(20, [11], '## Primary Request and Intent\n- newer checkpoint content'))
     const decision = await mounted.prestep(session)
     const text = (injectedMemoryMessage(decision)?.content[0] as { text: string }).text
     expect(text).toContain('- newer checkpoint content')
@@ -471,7 +493,8 @@ describe('compaction harvest (session/event → next injection)', () => {
     const session = fakeSession()
     await mounted.executes('memory_write', { content: 'first note' }, { agent: { id: 's1', session } })
     await mounted.executes('memory_write', { content: 'second note' }, { agent: { id: 's1', session } })
-    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    const sibling = fakeSession('/work/a', 's2')
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1], SUMMARY_TEXT))
     const decision = await mounted.prestep(session)
     const text = (injectedMemoryMessage(decision)?.content[0] as { text: string }).text
     expect(text).toContain('second note')
@@ -485,7 +508,8 @@ describe('compaction harvest (session/event → next injection)', () => {
     const session = fakeSession()
     const bullets = Array.from({ length: 10 }, () => `- ${'x'.repeat(298)}`)
     const longSummary = `## Files and Code\n${bullets.join('\n')}\n\n## Key Technical Concepts\n- node:sqlite`
-    await mounted.fire('session/event', session, checkpointEvent(10, [1], longSummary))
+    const sibling = fakeSession('/work/a', 's2')
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1], longSummary))
     const first = await mounted.prestep(session)
     const memory = injectedMemoryMessage(first)
     expect(memory).toBeDefined()
@@ -516,7 +540,8 @@ describe('session disposal cleanup', () => {
   it('drops that session\'s notes but keeps its workspace checkpoints', async () => {
     const mounted = mount()
     const session = fakeSession('/work/a', 's1')
-    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    const sibling = fakeSession('/work/a', 's2')
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1], SUMMARY_TEXT))
     await mounted.executes('memory_write', { content: 'a session note', scope: 'session' }, { agent: { id: 's1', session } })
     const decision = await mounted.prestep(session)
     expect((injectedMemoryMessage(decision)?.content[0] as { text: string }).text).toContain('a session note')
@@ -713,7 +738,8 @@ describe('webServer channel (Memory tab)', () => {
   it('serves the block endpoint byte-identical to what the pre-step injection injects', async () => {
     const mounted = mount()
     const session = fakeSession('/work/a', 's1')
-    await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
+    const sibling = fakeSession('/work/a', 's2')
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1], SUMMARY_TEXT))
     await mounted.executes('memory_write', { content: 'user prefers terse replies', scope: 'global' }, { agent: { id: 's1', session } })
     // The pre-step's rendered row: header + '\n\n' + block — the exact bytes the model sees.
     const decision = await mounted.prestep(session)
@@ -732,7 +758,8 @@ describe('webServer channel (Memory tab)', () => {
   it('serves no nested memory echoes through the block endpoint (same strip as the injection)', async () => {
     const mounted = mount()
     const session = fakeSession('/work/a', 's1')
-    await mounted.fire('session/event', session, checkpointEvent(10, [1], POLLUTED_SUMMARY))
+    const sibling = fakeSession('/work/a', 's2')
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1], POLLUTED_SUMMARY))
     const { res, message } = await askBlock(mounted.routes[0]?.handler as (req: unknown, res: unknown) => void, 'block', { sessionId: 's1', cwd: '/work/a' })
     expect(res.statusCode).toBe(200)
     expect(message.result.ok).toBe(true)
@@ -741,6 +768,25 @@ describe('webServer channel (Memory tab)', () => {
     expect(block).not.toContain('old fact')
     expect(block.match(/## Project Memory/g)).toHaveLength(1)
     expect(block.match(/<project-memory>/g)).toHaveLength(1)
+  })
+
+  it('block endpoint excludes the requesting session\'s own checkpoint but serves siblings\' (same rule as the injection)', async () => {
+    const mounted = mount()
+    const self = fakeSession('/work/a', 's1')
+    await mounted.fire('session/event', self, checkpointEvent(10, [1], SUMMARY_TEXT))
+    const sibling = fakeSession('/work/a', 's2')
+    await mounted.fire('session/event', sibling, checkpointEvent(20, [11], '## Primary Request and Intent\n- sibling goal'))
+    const handler = mounted.routes[0]?.handler as (req: unknown, res: unknown) => void
+    // s1's own request: its checkpoint is excluded, the sibling's is served.
+    const own = await askBlock(handler, 'block', { sessionId: 's1', cwd: '/work/a' })
+    expect(own.message.result.ok).toBe(true)
+    expect(own.message.result.value?.block).toContain('- sibling goal')
+    expect(own.message.result.value?.block).not.toContain('- ship the plugin')
+    // s2's own request: the mirror image — its checkpoint is excluded, s1's is served.
+    const other = await askBlock(handler, 'block', { sessionId: 's2', cwd: '/work/a' })
+    expect(other.message.result.ok).toBe(true)
+    expect(other.message.result.value?.block).toContain('- ship the plugin')
+    expect(other.message.result.value?.block).not.toContain('- sibling goal')
   })
 
   it('answers an empty block for empty sessionId/cwd (and for a missing payload)', async () => {

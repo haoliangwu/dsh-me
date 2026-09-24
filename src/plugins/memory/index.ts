@@ -188,7 +188,7 @@ export function findLastMemoryRow(session: LiveSessionLike): { readonly seq: num
 export function planMemoryInjection(store: MemoryStore, session: LiveSessionLike, options: MemoryBudgetOptions): MemoryInjectionPlan {
   const cwd = session.header.cwd
   if (cwd === undefined) return { kind: 'none' }
-  const block = assembleMemoryBlock(store.listActive(cwdToWorkspaceKey(cwd), session.id ?? null), options)
+  const block = assembleMemoryBlock(store.listActive(cwdToWorkspaceKey(cwd), session.id ?? null), options, session.id ?? undefined)
   if (block === '') return { kind: 'none' }
   const message = buildMemoryMessage(block)
   const row = findLastMemoryRow(session)
@@ -380,7 +380,7 @@ export function apply(ctx: Context, config: Config): void {
               || typeof cwd !== 'string' || cwd === '') {
               return Promise.resolve({ ok: true as const, value: { block: '' } })
             }
-            const block = assembleMemoryBlock(store.listActive(cwdToWorkspaceKey(cwd), sessionId), budget)
+            const block = assembleMemoryBlock(store.listActive(cwdToWorkspaceKey(cwd), sessionId), budget, sessionId)
             return Promise.resolve({ ok: true as const, value: { block } })
           } catch (error) {
             const reason = error instanceof Error ? error.message : String(error)
