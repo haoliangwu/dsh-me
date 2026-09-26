@@ -224,14 +224,15 @@ describe('plugin contract', () => {
   it('declares the id, the tools + webServer injection, and the dual-pool config', () => {
     expect(name).toBe('dsh-memory')
     expect(inject).toEqual(['tools', 'webServer'])
-    expect(Config({})).toEqual({ maxEntryChars: 2500, maxCompactionSummaries: 2, maxManualEntries: 10 })
+    expect(Config({})).toEqual({ maxEntryChars: 2500, maxCompactionSummaries: 2, maxManualChars: 10000 })
     expect(Config({ maxEntryChars: 9000 })).toEqual({
       maxEntryChars: 9000,
       maxCompactionSummaries: 2,
-      maxManualEntries: 10,
+      maxManualChars: 10000,
     })
     expect(() => Config({ maxEntryChars: 0 })).toThrow()
     expect(() => Config({ maxCompactionSummaries: -1 })).toThrow()
+    expect(() => Config({ maxManualChars: -1 })).toThrow()
   })
 })
 
@@ -488,8 +489,8 @@ describe('compaction harvest (session/event → next injection)', () => {
     expect(text).toContain('(1 older memories omitted)')
   })
 
-  it('drops the oldest manual entries over maxManualEntries without touching the compaction pool', async () => {
-    const mounted = mount({ maxManualEntries: 1 })
+  it('drops the oldest manual entries over the maxManualChars length budget without touching the compaction pool', async () => {
+    const mounted = mount({ maxManualChars: 11 })
     const session = fakeSession()
     await mounted.executes('memory_write', { content: 'first note' }, { agent: { id: 's1', session } })
     await mounted.executes('memory_write', { content: 'second note' }, { agent: { id: 's1', session } })
@@ -497,6 +498,8 @@ describe('compaction harvest (session/event → next injection)', () => {
     await mounted.fire('session/event', sibling, checkpointEvent(10, [1], SUMMARY_TEXT))
     const decision = await mounted.prestep(session)
     const text = (injectedMemoryMessage(decision)?.content[0] as { text: string }).text
+    // 'second note' (11 chars) fills the whole 11-char budget; 'first note'
+    // (10 chars) would overflow → admission stops, checkpoints untouched.
     expect(text).toContain('second note')
     expect(text).not.toContain('first note')
     expect(text).toContain('- ship the plugin')

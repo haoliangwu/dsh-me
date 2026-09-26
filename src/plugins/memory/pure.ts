@@ -347,14 +347,14 @@ export function segmentSummary(raw: string, maxEntryChars: number): MemorySegmen
 /** Manual scope rank for the injection order: global → workspace → session. */
 const MANUAL_RANK: Record<ManualScope, number> = { global: 0, workspace: 1, session: 2 }
 
-/** The dual-pool budget knobs (spec: counts, not chars). */
+/** The dual-pool budget knobs (spec: compaction by count, manual by total chars). */
 export interface MemoryBudgetOptions {
   /** Entry cap: harvest split threshold + memory_write truncation threshold (default 2500). */
   readonly maxEntryChars: number
   /** Compaction pool size: whole checkpoint groups, newest first (default 2). */
   readonly maxCompactionSummaries: number
-  /** Manual pool size: single entries across all scopes, newest first (default 10). */
-  readonly maxManualEntries: number
+  /** Manual pool budget: total content length (chars) of admitted entries, newest first (default 10000). */
+  readonly maxManualChars: number
 }
 
 /** The checkpoint date attribute: the created-at timestamp's UTC calendar day. */
@@ -517,10 +517,16 @@ export function normalizeBlockWhitespace(text: string): string {
 
 /**
  * Assemble the injected memory block over the TWO independent pools (spec):
- * manual entries first — admission takes the newest maxManualEntries across
- * ALL scopes (global-time ranked; an older entry of a higher tier never
- * holds a slot against a newer one), then the kept set renders in scope-tier
- * order global → workspace → session, newest first within each tier — then
+ * manual entries first — admission takes the newest entries across ALL scopes
+ * (global-time ranked; an older entry of a higher tier never holds a slot
+ * against a newer one) by greedy total-length accumulation up to
+ * maxManualChars: an entry is admitted only when the running cumulative plus
+ * its own content length stays within the budget, and admission STOPS at the
+ * first entry that does not fit — no skip-and-continue, so recency order is
+ * never broken (older small notes are not scavenged past a non-fitting newer
+ * one). The default budget 10000 ≥ the per-entry cap 2500 guarantees any single
+ * legal entry fits alone. The kept set then renders in scope-tier order
+ * global → workspace → session, newest first within each tier — then
  * compaction checkpoint groups newest→old (whole-group admission capped at
  * maxCompactionSummaries — a group is never beheaded). Both pools drop from
  * the OLDEST end, and the dropped count is annotated after the wrapper. The
@@ -555,13 +561,21 @@ export function assembleMemoryBlock(
     ? rows
     : rows.filter(row => !(row.kind === 'compaction' && row.session_id === currentSessionId))
   if (eligible.length === 0) return ''
-  // Manual pool admission: the newest maxManualEntries across ALL scopes
-  // (global-time ranked). The kept set is THEN rendered in scope-tier order
-  // (global → workspace → session), newest first within each tier.
+  // Manual pool admission: greedily accumulate the newest entries across ALL
+  // scopes (global-time ranked) up to the total-length budget maxManualChars
+  // (cumulative + entry length ≤ budget). Admission STOPS at the first entry
+  // that does not fit — no skip-and-continue, so recency order is never broken
+  // and older small notes are not scavenged past a non-fitting newer one. The
+  // kept set is THEN rendered in scope-tier order (global → workspace →
+  // session), newest first within each tier.
   const allManual = eligible.filter(row => row.kind === 'manual')
-  const admittedManual = allManual
-    .sort((a, b) => b.created_at - a.created_at)
-    .slice(0, Math.max(0, options.maxManualEntries))
+  const admittedManual: MemoryBlockRow[] = []
+  let manualChars = 0
+  for (const note of [...allManual].sort((a, b) => b.created_at - a.created_at)) {
+    if (manualChars + note.content.length > options.maxManualChars) break
+    admittedManual.push(note)
+    manualChars += note.content.length
+  }
   const keptManual = [...admittedManual].sort((a, b) => {
     const rankA = MANUAL_RANK[scopeOfRow(a)]
     const rankB = MANUAL_RANK[scopeOfRow(b)]
@@ -590,7 +604,7 @@ export function assembleMemoryBlock(
     )).filter(piece => piece !== ''),
   ]
   if (pieces.length === 0) {
-    // Rows exist but every pool dropped everything (e.g. maxManualEntries 0
+    // Rows exist but every pool dropped everything (e.g. maxManualChars 0
     // over a manual-only store): still render the header + omission
     // annotation — '' is reserved for the empty store and for a fully
     // excluded row set ("never inject").

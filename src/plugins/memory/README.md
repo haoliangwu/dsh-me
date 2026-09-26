@@ -4,7 +4,7 @@
 
 - **自动收割。** 监听 `session/event` 流的 checkpoint 消息（`user/message` 事件，`data.source` 标记 compact 插件；`compaction/summary` 只是元数据事件，不作为收割点），把摘要**按持久节分段**存进本地库（幂等：同一事件 seq + 段序只入一次，重放/重启不重复）。子代理会话的 checkpoint 同 workspace 也收割。
 - **收割分段。** 只收持久节（Primary Request and Intent / Key Technical Concepts / Files and Code / Errors and Fixes / Critical Context），丢掉 Pending Jobs / Current Work / Next Step 这类死会话瞬时状态；节（含标题）≤ `maxEntryChars` 整节一段，超帽按顶层 bullet 贪心装箱（`(cont. i/N)` 标注），非列表节按段落切，单块仍超帽按 ``` fence 边界拆，再超才硬截断并标注 `[segment truncated: N chars omitted]`——全系统唯一数据丢失路径。解析不出已知标题时整条原样入段，永不丢数据。切分是 (text, cap) 纯函数，重收割确定性幂等。
-- **双池注入预算。** manual（global → workspace → session，各自新→旧）与 compaction（checkpoint 组新→旧）分开计数互不挤占：compaction 池按**整组准入**（一个 checkpoint 的全部段同进同出，绝不腰斩），超出从最旧整组丢；manual 池按单条丢最旧。池装不下时块尾标注 `(N older memories omitted)`。
+- **双池注入预算。** manual（global → workspace → session，各自新→旧）与 compaction（checkpoint 组新→旧）分开计费互不挤占：compaction 池按**整组准入**（一个 checkpoint 的全部段同进同出，绝不腰斩），超出从最旧整组丢；manual 池按**总字符**（`maxManualChars`，默认 10000）从最新贪心累计——cumulative + 本条长度 ≤ 预算才收，**第一条放不下即停**（不跳过继续收更老的短条，保新→旧序；默认 10000 ≥ 单条帽 2500，任何合法单条都能单独放下），超出从最旧端丢。池装不下时块尾标注 `(N older memories omitted)`。
 - **空白归一（渲染层）。** 注入前折叠连续空行、剥行尾空白；代码 fence 内原样不动。store 永存原文，digest 对归一化后的整块计算。
 - **链式 compaction 去重。** 新 summary 的 shadowed seqs 命中旧 checkpoint 时，旧组的全部段标记 superseded、不再注入。
 - **自身新摘要不重复注入。** 给会话 S 装配记忆块时，排除 `session_id = S.id` 的 compaction 行：S 刚 /compact 完，最新 checkpoint 替换行还在它自己的 surface 上，再注入就是同一份摘要二连给模型。排除先于预算，腾出的池槽位让给更老的合格组；手工笔记（含 S 自己的 session 笔记）永不排除。fork 继承父 surface 但保留原 session_id，被继承的组仍可见。
@@ -54,7 +54,7 @@ $DSH_HOME/dsh-memory/memory.db     # DSH_HOME 有设置时
 |---|---|---|
 | `maxEntryChars` | `2500` | 段帽：收割分段阈值 + `memory_write` 截断阈值。改配置不重切已入库段（重收割被幂等挡住），可删库重来 |
 | `maxCompactionSummaries` | `2` | compaction 池大小：整组准入，最旧整组丢弃（同组全部段同进同出） |
-| `maxManualEntries` | `10` | manual 池大小：单条计数（global → workspace → session 各自新→旧），最旧丢弃 |
+| `maxManualChars` | `10000` | manual 池总字符预算：新→旧贪心累计准入（cumulative + 本条 ≤ 预算才收），第一条放不下即停（不跳过，保新→旧序；默认 ≥ 单条帽 2500，任何合法单条都能单独放下），最旧端丢弃 |
 
 示例（profile 层 cordis.patch.yml）：
 
@@ -63,7 +63,7 @@ $DSH_HOME/dsh-memory/memory.db     # DSH_HOME 有设置时
   name: dsh-me/plugins/memory
   config:
     maxCompactionSummaries: 3
-    maxManualEntries: 20
+    maxManualChars: 8000
 ```
 
 细节：宿主半边 `src/index.ts`（`name: dsh-memory`）注入 `tools` + `webServer` 两个服务（后者承载 Memory tab 的 `/dsh-memory` 只读通道）；注入挂在 `agent/pre-step`（读取 payload 上的 live session，无需 sessions 服务），收割、注入与 block endpoint 全部 try/catch 只记 warning 日志，绝不向宿主事件流或 waterfall 抛错。存储与纯逻辑见 `store.ts` / `pure.ts`，tab 客户端见 `client/`（并入合并 client bundle），测试覆盖见 `pure.spec.ts` / `store.spec.ts` / `index.spec.ts` / `client/index.spec.tsx`。

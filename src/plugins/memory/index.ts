@@ -63,19 +63,19 @@ export interface Config {
   maxEntryChars?: number
   /** Compaction pool size: whole checkpoint groups, newest first (default: 2). */
   maxCompactionSummaries?: number
-  /** Manual pool size: single entries, newest first across all scopes (default: 10). */
-  maxManualEntries?: number
+  /** Manual pool budget: total content length (chars) of admitted entries, newest first (default: 10000). */
+  maxManualChars?: number
 }
 
 /** Defaults when the config omits each knob. */
 export const DEFAULT_MAX_ENTRY_CHARS = 2500
 export const DEFAULT_MAX_COMPACTION_SUMMARIES = 2
-export const DEFAULT_MAX_MANUAL_ENTRIES = 10
+export const DEFAULT_MAX_MANUAL_CHARS = 10000
 
 export const Config = z.object({
   maxEntryChars: z.number().step(1).min(1).default(DEFAULT_MAX_ENTRY_CHARS),
   maxCompactionSummaries: z.number().step(1).min(0).default(DEFAULT_MAX_COMPACTION_SUMMARIES),
-  maxManualEntries: z.number().step(1).min(0).default(DEFAULT_MAX_MANUAL_ENTRIES),
+  maxManualChars: z.number().step(1).min(0).default(DEFAULT_MAX_MANUAL_CHARS),
 })
 
 /** The store file's subdirectory below the dsh home. */
@@ -287,7 +287,7 @@ export function apply(ctx: Context, config: Config): void {
   const budget: MemoryBudgetOptions = {
     maxEntryChars: config.maxEntryChars ?? DEFAULT_MAX_ENTRY_CHARS,
     maxCompactionSummaries: config.maxCompactionSummaries ?? DEFAULT_MAX_COMPACTION_SUMMARIES,
-    maxManualEntries: config.maxManualEntries ?? DEFAULT_MAX_MANUAL_ENTRIES,
+    maxManualChars: config.maxManualChars ?? DEFAULT_MAX_MANUAL_CHARS,
   }
 
   ctx.effect(() => {

@@ -57,7 +57,7 @@ function segment(id: number, seq: number, content: string, segmentIndex: number,
 }
 
 /** The default dual-pool budget for render tests (large enough to never trim). */
-const ROOMY_BUDGET: MemoryBudgetOptions = { maxEntryChars: 2500, maxCompactionSummaries: 10, maxManualEntries: 10 }
+const ROOMY_BUDGET: MemoryBudgetOptions = { maxEntryChars: 2500, maxCompactionSummaries: 10, maxManualChars: 10000 }
 
 /** The wild polluted-segment shape: a whole prior memory block verbatim inside one ``` fence. */
 const FENCED_ECHO = [
@@ -355,16 +355,51 @@ describe('assembleMemoryBlock (dual-pool injection)', () => {
     expect(output).toContain('(1 older memories omitted)')
   })
 
-  it('counts the manual pool independently: manual entries dropped from the oldest end never evict checkpoints', () => {
-    const notes = Array.from({ length: 12 }, (_, i) =>
-      row({ id: 100 + i, kind: 'manual', content: `note_${String(i).padStart(2, '0')}`, created_at: i }))
-    const output = block([...notes, ...newGroup], { ...ROOMY_BUDGET, maxManualEntries: 10 })
-    expect(output).toContain('note_11')
-    expect(output).toContain('note_02')
-    expect(output).not.toContain('note_01')
-    expect(output).not.toContain('note_00')
+  it('bounds the manual pool by total chars: entries dropped from the oldest end never evict checkpoints', () => {
+    const notes = Array.from({ length: 6 }, (_, i) =>
+      row({ id: 100 + i, kind: 'manual', content: 'y'.repeat(1500), created_at: i }))
+    const output = block([...notes, ...newGroup], { ...ROOMY_BUDGET, maxManualChars: 6000 })
+    // 1500 × 4 = 6000 fits; the 5th entry would overflow → admission stops, so
+    // the two oldest notes (101, 100) are dropped while checkpoints stay.
+    expect(output).toContain('<note id="105"')
+    expect(output).toContain('<note id="102"')
+    expect(output).not.toContain('<note id="101"')
+    expect(output).not.toContain('<note id="100"')
     expect(output).toContain('<checkpoint id="7"')
     expect(output).toContain('(2 older memories omitted)')
+  })
+
+  it('admits many short notes under the length budget (fewer, longer notes no longer cap the count)', () => {
+    const notes = Array.from({ length: 20 }, (_, i) =>
+      row({ id: 100 + i, kind: 'manual', content: `short note ${i}`, created_at: i }))
+    const output = block(notes, ROOMY_BUDGET)
+    // 20 × ~12 chars ≈ 240 ≤ 10000: every note fits, none omitted.
+    expect(output).toContain('<note id="119"')
+    expect(output).toContain('<note id="100"')
+    expect(output).not.toContain('omitted')
+  })
+
+  it('stops at the first entry that does not fit: older smaller notes are never scavenged', () => {
+    const bigNew = row({ id: 1, kind: 'manual', content: 'x'.repeat(5000), created_at: 300 })
+    const tinyOld = Array.from({ length: 3 }, (_, i) =>
+      row({ id: 10 + i, kind: 'manual', content: `tiny ${i}`, created_at: i }))
+    const output = block([bigNew, ...tinyOld], { ...ROOMY_BUDGET, maxManualChars: 5000 })
+    // Admission: 5000 fills the whole budget (used = 5000); the next newest
+    // (tiny 2) would push cumulative over 5000 → STOP. The tiny notes each fit
+    // alone but stay out — skip-and-continue would break recency order.
+    expect(output).toContain('x'.repeat(5000))
+    expect(output).not.toContain('tiny 2')
+    expect(output).not.toContain('tiny 1')
+    expect(output).not.toContain('tiny 0')
+    expect(output).toContain('(3 older memories omitted)')
+  })
+
+  it('admits a single max-size (maxEntryChars 2500) entry alone under the default budget', () => {
+    const maxNote = row({ id: 1, kind: 'manual', content: 'y'.repeat(2500), created_at: 1 })
+    const output = block([maxNote], ROOMY_BUDGET)
+    // Budget 6000 ≥ per-entry cap 2500: any single legal entry always fits.
+    expect(output).toContain('y'.repeat(2500))
+    expect(output).not.toContain('omitted')
   })
 
   it('drops the whole compaction pool (and counts the dropped group) when capped at zero', () => {
@@ -376,9 +411,10 @@ describe('assembleMemoryBlock (dual-pool injection)', () => {
 
   it('sums dropped groups and entries into one omitted annotation', () => {
     const notes = Array.from({ length: 3 }, (_, i) =>
-      row({ id: 100 + i, kind: 'manual', content: `note ${i}`, created_at: i }))
-    const output = block([...notes, ...oldGroup, ...newGroup], { maxEntryChars: 2500, maxCompactionSummaries: 1, maxManualEntries: 1 })
-    // 2 manual dropped + 1 group dropped → 3.
+      row({ id: 100 + i, kind: 'manual', content: 'z'.repeat(4000), created_at: i }))
+    const output = block([...notes, ...oldGroup, ...newGroup], { maxEntryChars: 2500, maxCompactionSummaries: 1, maxManualChars: 6000 })
+    // 2 manual dropped (the newest 4000-char note fits alone; the next would
+    // overflow the 6000 budget, admission stops) + 1 group dropped → 3.
     expect(output).toContain('(3 older memories omitted)')
   })
 
@@ -391,8 +427,10 @@ describe('assembleMemoryBlock (dual-pool injection)', () => {
   it('admits the newest manual entries ACROSS scopes: a newer note never loses its slot to an older note of a higher tier', () => {
     const oldGlobal = row({ id: 1, kind: 'manual', content: 'old global pref', workspace: null, created_at: 100 })
     const newWorkspace = row({ id: 2, kind: 'manual', content: 'new workspace fact', created_at: 200 })
-    const output = block([oldGlobal, newWorkspace], { ...ROOMY_BUDGET, maxManualEntries: 1 })
+    const output = block([oldGlobal, newWorkspace], { ...ROOMY_BUDGET, maxManualChars: 18 })
     // Admission is global-time ranked (workspace wins); render order stays tiered.
+    // 'new workspace fact' is 18 chars = the whole budget; 'old global pref'
+    // would overflow → admission stops.
     expect(output).toContain('new workspace fact')
     expect(output).not.toContain('old global pref')
     expect(output).toContain('(1 older memories omitted)')
@@ -400,7 +438,7 @@ describe('assembleMemoryBlock (dual-pool injection)', () => {
 
   it('renders an all-dropped store as the header + omission annotation (empty string stays reserved for the empty store)', () => {
     expect(block([], ROOMY_BUDGET)).toBe('')
-    const manualOnly = block([globalNote], { ...ROOMY_BUDGET, maxManualEntries: 0 })
+    const manualOnly = block([globalNote], { ...ROOMY_BUDGET, maxManualChars: 0 })
     expect(manualOnly).not.toBe('')
     expect(manualOnly).toContain('## Project Memory')
     expect(manualOnly).toContain('<project-memory>')
