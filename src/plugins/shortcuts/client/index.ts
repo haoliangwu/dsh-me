@@ -35,12 +35,12 @@ export type { ShortcutsKey } from './locales.ts'
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
     /** The shortcuts help overlay copy. */
-    shortcuts: ShortcutsKey
+    'dsh-ui-shortcuts': ShortcutsKey
   }
 }
 
-/** Dictionary namespace owned by this plugin. */
-const NS = 'shortcuts'
+/** Dictionary namespace owned by this plugin (distinct from the platform `shortcuts` seat). */
+const NS = 'dsh-ui-shortcuts'
 
 /** RPC channel owned by the host half of this plugin. */
 const CHANNEL = '/shortcuts'

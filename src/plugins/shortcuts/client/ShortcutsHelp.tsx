@@ -36,7 +36,7 @@ export interface ShortcutsHelpInjected {
 }
 
 /** Composed component props: the shell.overlay runtime share + locale + the bound hooks face. */
-export type ShortcutsHelpProps = PropsRuntime<'shell.overlay'> & PropsLocale<'shortcuts'> & InjectFace<ShortcutsHelpInjected>
+export type ShortcutsHelpProps = PropsRuntime<'shell.overlay'> & PropsLocale<'dsh-ui-shortcuts'> & InjectFace<ShortcutsHelpInjected>
 
 /**
  * Split a display binding string into keycap pieces. Heuristic: a string

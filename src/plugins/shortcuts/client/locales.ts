@@ -1,4 +1,4 @@
-/** `shortcuts` namespace dictionaries. */
+/** `dsh-ui-shortcuts` namespace dictionaries. */
 
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {

@@ -125,11 +125,11 @@ describe('apply', () => {
   it('registers the locale dictionaries and the shell.overlay entry', async () => {
     const { fiber, slots, dictionaries } = await fullBench(DEFAULTS, 'mac')
     try {
-      expect(dictionaries.get('shortcuts')).toEqual({ zh, en })
+      expect(dictionaries.get('dsh-ui-shortcuts')).toEqual({ zh, en })
       const entries = slots.byName('shell.overlay')
       expect(entries).toHaveLength(1)
       expect(entries[0]?.id).toBe('dsh-ui-shortcuts-help')
-      expect(entries[0]?.locale).toBe('shortcuts')
+      expect(entries[0]?.locale).toBe('dsh-ui-shortcuts')
       expect(entries[0]?.component).toBe(ShortcutsHelp)
     } finally {
       await fiber.dispose()
