@@ -498,12 +498,13 @@ function replayAssistantMessage(
 }
 
 /**
- * One replayed tool result: fresh message id, remapped callId (must equal
- * `content[0].toolCallId` and pair the REPLAYED tool/call — never the
- * original, whose events remain in the live feed), turn/step moved to the
- * fake turn, error/meta preserved verbatim. The surface op is a plain tail
- * append — no pairing validation exists there (design §2.2.5,
- * surface.ts:483-484; repair.ts:93-125 precedent).
+ * One replayed tool result: fresh message id, remapped callId (the rc.2
+ * flattened tool message carries it at the TOP level — `message.toolCallId`
+ * AND `source.callId` — there is no tool-result content block anymore,
+ * dsh-llm message.ts f4a32dbd0a), turn/step moved to the fake turn,
+ * error/meta preserved verbatim. The surface op is a plain tail append — no
+ * pairing validation exists there (design §2.2.5, surface.ts:483-484;
+ * repair.ts:93-125 precedent).
  */
 function replayToolResult(
   data: SessionEventMap['tool/result'],
@@ -512,9 +513,7 @@ function replayToolResult(
 ): SessionEventMap['tool/result'] {
   const message = { ...structuredClone(data.message), id: MessageId(randomUUID()) } as ToolResultMessage
   message.source = { ...message.source, callId: ToolCallId(freshCallId(message.source.callId)) }
-  message.content = message.content.map((block) =>
-    block.type === 'tool-result' ? { ...block, toolCallId: ToolCallId(freshCallId(block.toolCallId)) } : block,
-  )
+  message.toolCallId = ToolCallId(freshCallId(message.toolCallId))
   return {
     turn: fakeTurn,
     step: data.step,

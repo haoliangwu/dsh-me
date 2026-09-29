@@ -456,12 +456,12 @@ describe('pure: redo replay plan (§2.2)', () => {
 
     session.append('turn/start', { turn: 2 })
     session.append('step/start', { turn: 2, step: 0 })
-    // A tool-result rewrite of turn-1's result (rewrite may change only the
-    // tool-result block's text content) — its seq now lies inside turn 2's log
+    // A tool-result rewrite of turn-1's result (rewrite replaces the result's
+    // text content; rc.2 flat shape — the message content IS the output
+    // blocks, no tool-result wrapper) — its seq now lies inside turn 2's log
     // range.
     const rewrittenResult = structuredClone(result1.data) as SessionEventMap['tool/result']
-    const resultBlock = rewrittenResult.message.content[0] as { content: unknown }
-    resultBlock.content = [{ type: 'text', text: 'REFRESHED' }]
+    rewrittenResult.message = { ...rewrittenResult.message, content: [{ type: 'text', text: 'REFRESHED' }] }
     session.append('tool/result', rewrittenResult, {
       surfaceOp: { op: 'replace', startSeq: SessionSeq(result1Seq), endSeq: SessionSeq(result1Seq) },
       sourceEventSeqs: [SessionSeq(result1Seq)],
@@ -577,9 +577,11 @@ describe('pure: redo replay plan (§2.2)', () => {
     expect(callData.callId).not.toBe('call-1')
     expect(callData).toMatchObject({ turn: FAKE_TURN_BASE + 1, step: 0, name: 'list_files', arguments: '{}' })
     expect(resultData.turn).toBe(FAKE_TURN_BASE + 1)
-    // The replayed result pairs the REPLAYED call, not the original.
+    // The replayed result pairs the REPLAYED call, not the original. rc.2
+    // flat tool results (dsh-llm f4a32dbd0a): the call id rides at the message
+    // TOP level — no tool-result content block exists anymore.
     expect(resultData.message.source.callId).toBe(callData.callId)
-    expect(resultData.message.content[0]?.toolCallId).toBe(callData.callId)
+    expect(resultData.message.toolCallId).toBe(callData.callId)
     // Assistant copy dropped its usage; its tool-call block was remapped to
     // the fresh call id too.
     const assistant = plan.find(step => step.type === 'assistant/message')

@@ -179,13 +179,11 @@ function wireOf(messages: readonly Message[]): unknown[] {
       })
       continue
     }
-    const toolResults = message.content
-      .filter((block): block is Extract<ContentBlock, { type: 'tool-result' }> => block.type === 'tool-result')
-    const text = flattenText(message.content)
-    if (text.length > 0 || toolResults.length === 0) wire.push({ role: 'user', content: text })
-    for (const result of toolResults) {
-      wire.push({ role: 'tool', tool_call_id: result.toolCallId, content: flattenText(result.content) || '(no output)' })
+    if (message.role === 'tool') {
+      wire.push({ role: 'tool', tool_call_id: message.toolCallId, content: flattenText(message.content) || '(no output)' })
+      continue
     }
+    wire.push({ role: 'user', content: flattenText(message.content) })
   }
   return wire
 }
@@ -373,7 +371,9 @@ describe('dsh-undo spike: tool copies (§2.2.4–2.2.5)', () => {
     if (result === undefined) throw new Error('missing fake tool result')
     expect(result.data.turn).toBe(FAKE_TURN_BASE + 1)
     expect(result.data.message.source.callId).toBe(fakeCalls[0]?.data.callId)
-    expect(result.data.message.content[0]?.toolCallId).toBe(fakeCalls[0]?.data.callId)
+    // rc.2 flat tool results (dsh-llm f4a32dbd0a): pairing id rides at the
+    // message TOP level; no tool-result content block exists anymore.
+    expect(result.data.message.toolCallId).toBe(fakeCalls[0]?.data.callId)
   })
 })
 
@@ -441,11 +441,11 @@ describe('dsh-undo spike: foreign replacement events in the turn range (§2.2 ap
     const contextSeq = contextEvent.seq
     session.append('turn/start', { turn: 2 })
     session.append('step/start', { turn: 2, step: 0 })
-    // A tool-result rewrite of turn-1's result (rewrite may change only the
-    // tool-result block's text content).
+    // A tool-result rewrite of turn-1's result (rewrite replaces the result's
+    // text content; rc.2 flat shape — the message content IS the output
+    // blocks, no tool-result wrapper).
     const rewrittenResult = structuredClone(result1Event.data) as SessionEventMap['tool/result']
-    const resultBlock = rewrittenResult.message.content[0] as { content: unknown }
-    resultBlock.content = [{ type: 'text', text: 'REFRESHED' }]
+    rewrittenResult.message = { ...rewrittenResult.message, content: [{ type: 'text', text: 'REFRESHED' }] }
     session.append('tool/result', rewrittenResult, {
       surfaceOp: { op: 'replace', startSeq: SessionSeq(result1Event.seq), endSeq: SessionSeq(result1Event.seq) },
       sourceEventSeqs: [SessionSeq(result1Event.seq)],
