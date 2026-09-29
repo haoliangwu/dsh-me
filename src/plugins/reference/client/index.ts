@@ -1,25 +1,25 @@
 /**
  * dsh-reference, browser half: the References settings page (`settings.section`
  * entry, order 30) and the `@`-menu source mounting external-directory
- * references as plain-text `@<path>` mentions. Both halves share one bound
- * `dsh-reference` settings scope: the page subscribes through its injected
- * hook (host document commits land in the list without a reload), while the
- * trigger source re-reads the same snapshot at every menu open — settings
- * edits are visible in `@` immediately. Every entry is a candidate (no
- * clipping: autoInclude only gates the advertisement); saving validates
- * through the same alias/path rules; the
- * mention serialization is the shared `serializeMention` (space-containing
- * paths take the quoted form). Export discipline: packages/client/AGENTS.md.
+ * references as plain-text `@<path>` mentions. Both halves share one
+ * `dsh-reference` settings form (`ctx.configForms.get`): the page subscribes
+ * through its injected hook (host document commits land in the list without a
+ * reload), while the trigger source re-reads the same snapshot at every menu
+ * open — settings edits are visible in `@` immediately. Every entry is a
+ * candidate (no clipping: autoInclude only gates the advertisement); saving
+ * validates through the same alias/path rules; the mention serialization is
+ * the shared `serializeMention` (space-containing paths take the quoted form).
+ * Export discipline: packages/client/AGENTS.md.
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 // Type-only: pulls the locale plugin's Context merge (ctx.locale).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
-// Type-only: pulls the ui-settings SlotMap + settingsScope Context merges.
+// Type-only: pulls the ui-settings SlotMap + configForms Context merges.
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls the ui-input-trigger Context merge + source contract.
 import type {} from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 // Type-only: pulls the ctx.remote merge (fixed Host facts; the read-only
-// settings describe mirror lives with ui-settings, which supplies ctx.settingsScope).
+// settings describe mirror lives with ui-settings, which supplies ctx.configForms).
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 // Type-only: pulls the ctx.slots merge (the slot registry service face).
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
@@ -27,7 +27,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { InputTriggerServiceContract, InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
-import type { ReferenceEntry } from '../pure.ts'
+import type { ConfigForm, ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { ReferenceEntry, ReferenceTable } from '../pure.ts'
 import { candidateEntries, defaultCacheDir, normalizeTable, resolveEntryPath, serializeMention } from '../pure.ts'
 import { ReferencesSection } from './ReferencesSection.tsx'
 import type { ReferencesSectionInjected } from './ReferencesSection.tsx'
@@ -78,12 +79,40 @@ interface PickDirectoryResult {
   readonly path?: string
 }
 
-/** Required services: the slot registry, the settings scope, the locale, the trigger pipeline, the Remote facts, and the RPC carrier. */
-export const inject = ['slots', 'locale', 'settingsScope', 'inputTriggers', 'remote', 'connection']
+/** Required services: the slot registry, the config-forms service, the locale, the trigger pipeline, the Remote facts, and the RPC carrier. */
+export const inject = ['slots', 'locale', 'configForms', 'inputTriggers', 'remote', 'connection']
 
 /**
- * Client plugin body: register the `settings.references` dictionaries, bind
- * the `dsh-reference` settings scope, contribute the References settings page,
+ * Adapt the raw `dsh-reference` entry form (value `{ table }`) to the
+ * table-only face the settings page and the `@` source consume: reads narrow
+ * to `value.table`, memoized per raw snapshot so reference-stability
+ * subscribers (React's useSyncExternalStore among them) keep their contract;
+ * per-alias set/unset map to path-prefixed `table` mutations.
+ * @param rawForm - the entry's own Config form, whose value is `{ table }`.
+ * @returns the table-shaped `ConfigForm` view.
+ */
+function tableFormOf(rawForm: ConfigForm<{ table?: ReferenceTable }>): ConfigForm<ReferenceTable> {
+  let lastRaw: ConfigFormSnapshot<{ table?: ReferenceTable }> | undefined
+  let lastView: ConfigFormSnapshot<ReferenceTable> | undefined
+  return {
+    getSnapshot: () => {
+      const raw = rawForm.getSnapshot()
+      if (raw !== lastRaw) {
+        lastRaw = raw
+        lastView = { ...raw, value: raw.value?.table }
+      }
+      return lastView!
+    },
+    subscribe: (listener) => rawForm.subscribe(listener),
+    set: (alias, entry) => rawForm.mutate([{ op: 'set', path: ['table', alias], value: entry }]),
+    unset: (alias) => rawForm.mutate([{ op: 'unset', path: ['table', alias] }]),
+    mutate: (ops, expectedRevision) => rawForm.mutate(ops, expectedRevision),
+  }
+}
+
+/**
+ * Client plugin body: register the `settings.references` dictionaries, acquire
+ * the `dsh-reference` settings form, contribute the References settings page,
  * and register the `@` trigger source.
  * @param ctx - client root context.
  */
@@ -91,10 +120,12 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-reference: dictionaries')
 
   const t = ctx.locale.bind(NS)
-  // One bound scope for the whole plugin: the page's injected hook and the @
-  // source's per-open snapshot reads derive from the same mirror, so they can
-  // never disagree about the table.
-  const scope = ctx.settingsScope.bind({ namespace: SETTINGS_NS, decode: normalizeTable })
+  // One shared settings form for the whole plugin: the page's injected hook and
+  // the @ source's per-open snapshot reads derive from the same form, so they
+  // can never disagree about the table. In the 0.1.7-rc.2 model the namespace
+  // is this entry's own Config form, whose value is `{ table: ReferenceTable }`
+  // (the volatile `table` dict field).
+  const form = tableFormOf(ctx.configForms.get<{ table?: ReferenceTable }>(SETTINGS_NS))
   // Resolved once, where `connection` is declared in this plugin's inject; the
   // browser RPC carrier face is not a Context merge in the published types.
   const connection = ctx.get('connection') as ConnectionHandle
@@ -117,13 +148,20 @@ export function apply(ctx: ClientContext): void {
   /** The cache root git references resolve through: host value or the default. */
   const effectiveCacheDir = (home: string): string => hostCacheDir ?? defaultCacheDir(home)
 
-  /** Persist one entry; a rename unsets the previous alias first. */
+  /** Persist one entry; a rename unsets the previous alias first. A host refusal answers `false` — warn, never fail the call (old UX). */
   const saveEntry = async (alias: string, entry: ReferenceEntry, previousAlias?: string): Promise<void> => {
-    if (previousAlias !== undefined && previousAlias !== alias) await scope.unset(previousAlias)
-    await scope.set(alias, entry)
+    if (previousAlias !== undefined && previousAlias !== alias) {
+      const accepted = await form.unset(previousAlias)
+      if (!accepted) console.warn('dsh-reference: rename unset refused by host:', previousAlias)
+    }
+    const accepted = await form.set(alias, entry)
+    if (!accepted) console.warn('dsh-reference: save refused by host:', alias)
   }
   /** Remove one entry. */
-  const removeEntry = (alias: string): Promise<void> => scope.unset(alias)
+  const removeEntry = async (alias: string): Promise<void> => {
+    const accepted = await form.unset(alias)
+    if (!accepted) console.warn('dsh-reference: delete refused by host:', alias)
+  }
   /** Probe host existence through the RPC channel; a failed or refused probe answers true (no warning). */
   const probePath = (rawPath: string): Promise<boolean> => connection.rpc.call(CHANNEL, ENDPOINT_EXISTS, { path: rawPath })
     .then((result) => {
@@ -158,7 +196,7 @@ export function apply(ctx: ClientContext): void {
     label: () => t('nav'),
     locale: NS,
     inject: (): ReferencesSectionInjected => ({
-      hooks: { settings: scope },
+      hooks: { settings: form },
       saveEntry,
       removeEntry,
       probePath,
@@ -180,7 +218,7 @@ export function apply(ctx: ClientContext): void {
     async candidates(_session, req) {
       const home = ctx.remote.$host.home
       if (home === undefined) return []
-      const table = scope.getSnapshot().value ?? {}
+      const table = normalizeTable(form.getSnapshot().value)
       const query = req.query.trim().toLowerCase()
       return candidateEntries(table, home, effectiveCacheDir(home))
         .filter(candidate =>
@@ -201,7 +239,7 @@ export function apply(ctx: ClientContext): void {
     onPick(pick) {
       const home = ctx.remote.$host.home
       const value = pick.candidate.value
-      const table = scope.getSnapshot().value ?? {}
+      const table = normalizeTable(form.getSnapshot().value)
       const entry = value === undefined ? undefined : table[value]
       if (home === undefined || value === undefined || entry === undefined) return undefined
       const mention = serializeMention(resolveEntryPath(value, entry, home, effectiveCacheDir(home)))

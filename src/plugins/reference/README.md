@@ -45,7 +45,7 @@ Project references provide additional directories that can be accessed when rele
 
 | 决策 | 值 |
 |---|---|
-| 存储 | `ctx.settings.register('dsh-reference', Schema)`；map(alias → 本地 { path } XOR Git { repository, branch?, refresh? }，description 可选，autoInclude 默认 true；旧 `hidden` 字段宽容读入，normalize 迁移：`hidden: true` → 关、其余 → 开，写路径只用 autoInclude)，写经 settingsScope 走远端 settings mutate |
+| 存储 | `ctx.settings.register('dsh-reference', Schema)`；map(alias → 本地 { path } XOR Git { repository, branch?, refresh? }，description 可选，autoInclude 默认 true；旧 `hidden` 字段宽容读入，normalize 迁移：`hidden: true` → 关、其余 → 开，写路径只用 autoInclude)，client 半经 `ctx.configForms`（`configForms.get` 表 + `set`/`unset` 写）走远端 settings mutate |
 | 校验 | alias 禁空串、`/`、`\`、空白、反引号、逗号；path 必须 `/` 或 `~/` 开头；entry 形态 XOR（混用/缺失拒绝）；repository 禁空、`file://` 拒绝；branch 按 check-ref-format 子集（空白/`~^:?*[\`/`..`/起止或双 `/` 拒绝）— schema 层与保存层同源纯核 |
 | 物化 | `git clone --depth 1`（-b branch 可选）→ `<cacheDir>/<alias>`；`missing-only`（默认）缓存存在零网络，branch marker 失配 → 删缓存重 clone；`always` → fetch origin + reset --hard（`origin/<branch||HEAD>`）；失败仅 logger，apply 与 watch 后台发起不阻塞 |
 | 触发 | apply（插件加载/HMR）+ `scope.watch`（settings 表任何变更后重跑物化；missing-only 幂等，无需防抖） |

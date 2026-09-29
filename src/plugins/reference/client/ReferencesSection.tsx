@@ -11,22 +11,23 @@
  * always-refresh override); saving validates through the shared pure core
  * (alias/path rules plus the XOR `entryShapeError`) and probes host existence
  * for local paths — a missing directory only warns, never blocks (US-6/US-7).
- * The table snapshot rides the injected settings scope, bound by the renderer
- * as `useSettings`: a host document commit lands in this list without a reload.
+ * The table snapshot rides the injected settings form (`configForms`), bound
+ * by the renderer as `useSettings`: a host document commit lands in this list
+ * without a reload.
  */
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Button, Modal, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { ReferenceEntry, ReferenceTable } from '../pure.ts'
-import { aliasValidationError, branchValidationError, entryShapeError, referencePathError } from '../pure.ts'
+import { aliasValidationError, branchValidationError, entryShapeError, normalizeTable, referencePathError } from '../pure.ts'
 import css from './ReferencesSection.module.css'
 
 /** Registration-side face used by the page. */
 export interface ReferencesSectionInjected {
   hooks: {
-    /** Bound `dsh-reference` settings scope; the renderer binds it as `useSettings`. */
-    settings: SettingsScope<ReferenceTable>
+    /** `dsh-reference` settings form; the renderer binds it as `useSettings`. */
+    settings: ConfigForm<ReferenceTable>
   }
   /**
    * Persist one entry. A rename unsets the previous alias first and then writes
@@ -164,7 +165,7 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
   const [pickingPath, setPickingPath] = useState(false)
 
   const rows = useMemo(() => {
-    const table = snapshot.value ?? {}
+    const table = normalizeTable(snapshot.value)
     return Object.keys(table).sort().map(alias => ({ alias, entry: table[alias] }))
   }, [snapshot.value])
 
@@ -189,7 +190,7 @@ export function ReferencesSection(props: ReferencesSectionProps): ReactNode {
 
   /** Validate, probe, and persist one draft (add or row-edit). */
   const saveDraft = async (draft: Draft, previousAlias: string | undefined): Promise<void> => {
-    const table = snapshot.value ?? {}
+    const table = normalizeTable(snapshot.value)
     const alreadyTaken = previousAlias === undefined
       ? draft.alias in table
       : previousAlias !== draft.alias && draft.alias in table

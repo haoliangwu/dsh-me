@@ -3,12 +3,20 @@ import { Config, Schema } from './index.ts'
 
 describe('Config schema', () => {
   it('defaults the refresh policy to missing-only without cacheDir', () => {
-    expect(Config({})).toEqual({ refresh: 'missing-only' })
+    const config = Config({})
+    expect(config.refresh).toBe('missing-only')
+    expect(config.table.get()).toEqual({})
   })
 
   it('passes cacheDir and an explicit refresh through', () => {
-    expect(Config({ cacheDir: '/var/cache/refs' })).toEqual({ cacheDir: '/var/cache/refs', refresh: 'missing-only' })
-    expect(Config({ cacheDir: '~/refs', refresh: 'always' })).toEqual({ cacheDir: '~/refs', refresh: 'always' })
+    const withDir = Config({ cacheDir: '/var/cache/refs' })
+    expect(withDir.cacheDir).toBe('/var/cache/refs')
+    expect(withDir.refresh).toBe('missing-only')
+    expect(withDir.table.get()).toEqual({})
+    const withRefresh = Config({ cacheDir: '~/refs', refresh: 'always' })
+    expect(withRefresh.cacheDir).toBe('~/refs')
+    expect(withRefresh.refresh).toBe('always')
+    expect(withRefresh.table.get()).toEqual({})
   })
 
   it('rejects a refresh outside the const-union', () => {

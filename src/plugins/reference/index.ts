@@ -2,38 +2,39 @@
  * dsh-reference, node half.
  *
  * A named reference table (alias → external directory path + description +
- * auto-include, or a git repository + optional branch/refresh) stored in the
- * global `dsh-reference` settings namespace — every profile shares one table,
- * persisted to settings.yaml by the settings service. The host half registers
- * the namespace schema (validation shared with the pure core: alias/path
- * rules plus the `{ path }` XOR `{ repository, branch? }` shape) and mounts a
- * dynamic `systemPrompt` section (`dsh-reference:rules`, order 10400, after
- * the persona suffix) that re-reads the table at every assembly: every
- * auto-include entry is advertised with its resolved materialized path (git:
+ * auto-include, or a git repository + optional branch/refresh). In the
+ * 0.1.7-rc.2 settings model the table lives in THIS plugin entry's own Config
+ * form: the volatile `table` dict field below IS the browser-facing
+ * `dsh-reference` settings namespace (entry ids are namespace ids; the old
+ * `settings.register` API is gone), served by the settings service while the
+ * profile composes this plugin. The host half reads the table from its own
+ * live Config reference (`config.table.get()`) and mounts a dynamic
+ * `systemPrompt` section (`dsh-reference:rules`, order 10400, after the
+ * persona suffix) that re-reads the table at every assembly: every auto-include
+ * entry is advertised with its resolved materialized path (git:
  * `<cacheDir>/<alias>`) plus its description when present, in an
  * `<available_references>` block so the agent knows when to consult the
  * material. autoInclude defaults true; setting it false keeps the entry in
  * the @-menu (manual mount works) but out of the advertisement — the agent
  * is not told (semantic inversion of the legacy `hidden`, which the schema
  * tolerates on read and the pure-core normalize migrates). Git entries are
- * materialized
- * in the background at apply AND after every settings-table mutation (the
- * settings scope watch re-runs materialization, so a git entry saved through
- * the settings page clones without a reload; re-runs are idempotent by the
- * missing-only semantics — no debounce): clone/fetch per the refresh policy;
- * failures only log — never blocking apply. missing-only leaves an existing
- * checkout untouched (no network), a branch change re-clones, always fetches +
- * hard-resets. A webServer RPC channel (`/dsh-reference`, endpoint `exists`)
- * answers the browser's path-existence probe for the settings page's
- * non-blocking ⚠ warning. The UI lives in the client half
- * (src/plugins/reference/client).
+ * materialized in the background at apply AND after every settings-table
+ * mutation (the `loader/volatile-update` event re-runs materialization, so a
+ * git entry saved through the settings page clones without a reload; re-runs
+ * are idempotent by the missing-only semantics — no debounce): clone/fetch per
+ * the refresh policy; failures only log — never blocking apply. missing-only
+ * leaves an existing checkout untouched (no network), a branch change
+ * re-clones, always fetches + hard-resets. A webServer RPC channel
+ * (`/dsh-reference`, endpoint `exists`) answers the browser's path-existence
+ * probe for the settings page's non-blocking ⚠ warning. The UI lives in the
+ * client half (src/plugins/reference/client).
  */
 import { homedir } from 'node:os'
 import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Volatile } from '@deepseek-ai/cordis'
 import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 // Type-only import activates the optional webServer Context declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
@@ -51,16 +52,24 @@ import {
   resolveCacheDir,
   resolveReferencePath,
   type LoggerLike,
+  type ReferenceTable,
   type RefreshMode,
 } from './pure.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'dsh-reference'
 
-/** Required services: the settings registry and the system-prompt registry. */
+/** Required services: the settings registry (page policy) and the system-prompt registry. */
 export const inject = ['settings', 'systemPrompt']
 
-/** Plugin config: the git cache root and the global git refresh policy. */
+/**
+ * Plugin config: the git cache root, the global git refresh policy, and the
+ * reference table. The table is a VOLATILE dict field of this plugin's own
+ * Config schema: in the 0.1.7-rc.2 settings model every profile entry's
+ * Config form IS its settings namespace (entry id `dsh-reference`), so the
+ * settings service serves the table to the browser with no separate
+ * registration (the old `settings.register` API is gone).
+ */
 export interface Config {
   /** Git cache root (default: `~/.cache/dsh-me/references`). */
   cacheDir?: string
@@ -70,6 +79,8 @@ export interface Config {
    * absent and leaves existing checkouts untouched. Per-entry `refresh` wins.
    */
   refresh?: RefreshMode
+  /** The reference table: map(alias → entry). Live-editable; read via {@link Volatile.get}. */
+  table: Volatile<ReferenceTable>
 }
 
 // Schemastery object keys are optional by absence (and the entry shape's
@@ -118,10 +129,11 @@ export const Schema = z
   })
   .default({})
 
-/** The plugin Config schema: cacheDir (optional; home-resolved by the pure core) + global refresh. */
+/** The plugin Config schema: cacheDir (optional; home-resolved by the pure core) + global refresh, and the volatile reference table (served as the `dsh-reference` settings namespace). */
 export const Config = z.object({
   cacheDir: z.string(),
   refresh: refreshModeShape.default('missing-only'),
+  table: z.dict(entryShape).default({}).volatile(),
 })
 
 /** Section placement: after the persona suffix, the tail reference slot. */
@@ -140,18 +152,9 @@ const ENDPOINT_PICK_DIRECTORY = 'pickDirectory'
 /** Endpoint under {@link CHANNEL}: return the host's resolved git cacheDir + refresh policy. */
 const ENDPOINT_CONFIG = 'config'
 
-/** Structural settings-registry face (the scope's get()/watch() are the read + observe API). */
-interface SettingsScopeLike {
-  get(): unknown
-  /**
-   * Observe every namespace mutation (the settings service invokes the
-   * listener after each write lands). Returns the disposer.
-   */
-  watch(listener: () => void): () => void
-}
-
+/** Structural settings-service face: presentation policy only (auto page opt-out). */
 interface SettingsLike {
-  register(namespace: string, schema: unknown): SettingsScopeLike
+  configure(presentation: { auto?: boolean }, owner?: unknown): () => void
 }
 
 /** Structural system-prompt service face: section() returns the disposer. */
@@ -186,18 +189,19 @@ function runGit(args: readonly string[], options: { readonly cwd: string }): Pro
 }
 
 /**
- * Mount the reference-table settings namespace, kick off git materialization
- * in the background, and mount the dynamic advertisement section. The
- * namespace registration is itself effect-scoped (the settings provider
- * registers through ctx.effect, removing the namespace when this plugin's
- * scope disposes) — no extra effect wrapper. Materialization runs at apply
- * (plugin load / cordis HMR config reload) AND after every settings-table
- * mutation (the scope watch re-runs it, so a git entry saved through the
- * settings page materializes without a reload): clone/fetch/refresh failures
- * only log — apply never waits on the network, and the prompt points at the
- * target cache path meanwhile. Re-runs are idempotent by the missing-only
- * semantics (an existing checkout touches no network), so no debounce is
- * needed. The section re-reads the table at every assembly, so a
+ * Serve the reference table as this entry's settings namespace (0.1.7-rc.2:
+ * namespaces ARE plugin entries' own Config forms — the volatile `table` field
+ * above, no `settings.register`), kick off git materialization in the
+ * background, and mount the dynamic advertisement section. The settings service
+ * serves the entry's form for as long as the plugin is composed — nothing to
+ * register or unregister here. Materialization runs at apply (plugin load /
+ * cordis HMR config reload) AND after every volatile-config update
+ * (`loader/volatile-update` fires on settings saves, so a git entry saved
+ * through the settings page materializes without a reload): clone/fetch/refresh
+ * failures only log — apply never waits on the network, and the prompt points
+ * at the target cache path meanwhile. Re-runs are idempotent by the
+ * missing-only semantics (an existing checkout touches no network), so no
+ * debounce is needed. The section re-reads the table at every assembly, so a
  * settings-save lands in the next turn's prompt without a restart.
  * @param ctx - host plugin context.
  * @param config - validated {@link Config}.
@@ -205,7 +209,10 @@ function runGit(args: readonly string[], options: { readonly cwd: string }): Pro
 export function apply(ctx: Context, config: Config): void {
   const scoped = ctx as unknown as ReferenceCtx
   const home = homedir()
-  const scope = scoped.settings.register('dsh-reference', Schema)
+  // We ship our own settings page for this namespace; suppress the generic
+  // auto-generated form so the shell shows only our custom section. (The
+  // plugin's own inject already gated apply on the settings service.)
+  ctx.effect(() => scoped.settings.configure({ auto: false }, ctx.fiber))
   let cacheDir = resolveCacheDir(config.cacheDir, home)
   if (cacheDir === undefined) {
     scoped.logger.warn(`dsh-reference: cacheDir「${config.cacheDir}」不是绝对路径或 ~/ 开头；使用默认 ${defaultCacheDir(home)}`)
@@ -215,7 +222,7 @@ export function apply(ctx: Context, config: Config): void {
   /** Materialize every git entry of the current table in the background. */
   const materializeAll = (): void => {
     // Clone/refresh failures only log; nothing here throws into the watcher.
-    for (const spec of gitSpecsOf(normalizeTable(scope.get()), home, cacheDir, config.refresh)) {
+    for (const spec of gitSpecsOf(normalizeTable(config.table.get()), home, cacheDir, config.refresh)) {
       void materializeGit(spec, {
         exec: runGit,
         exists: existsSync,
@@ -236,16 +243,17 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
-  // Materialize at apply (settings.yaml already holds the table on load).
+  // Materialize at apply (the entry config already holds the table on load).
   materializeAll()
 
-  // Re-materialize after every table mutation: a git entry saved through the
-  // settings page must clone without a plugin reload (spec US-1/US-5 — the
-  // table is runtime data; a config HMR would never fire). The effect return
-  // value is the watch disposer, torn down with this plugin's scope.
-  ctx.effect(() => scope.watch(materializeAll))
+  // Re-materialize after every settings save: the entry's volatile `table`
+  // field updates without a plugin remount and the loader emits
+  // `loader/volatile-update`, so a git entry saved through the settings page
+  // clones without a reload (spec US-1/US-5 — the table is runtime data; a
+  // config HMR would never fire).
+  ctx.on('loader/volatile-update', materializeAll)
 
-  // Read fresh at every assembly: settings edits (settings.yaml or the web
+  // Read fresh at every assembly: settings edits (the entry config or the web
   // settings page) land in the next turn's advertisement.
   ctx.effect(() => scoped.systemPrompt.section({
     name: SECTION_NAME,
@@ -253,7 +261,7 @@ export function apply(ctx: Context, config: Config): void {
     // Model-facing instruction text, not a prompt-variable template —
     // preserve literal text like a {@link PromptSection} contributor must.
     interpolate: false,
-    text: () => buildAdvertisementText(normalizeTable(scope.get()), home, cacheDir),
+    text: () => buildAdvertisementText(normalizeTable(config.table.get()), home, cacheDir),
   }))
 
   // Browser-side path-existence probing (the settings page's non-blocking ⚠
