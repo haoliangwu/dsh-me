@@ -10,7 +10,10 @@
  * dual-pool-budgeted memory block is injected into every pre-step as a PERSISTED
  * context `user/message` row carrying a plugin source + digest (never a
  * dynamic systemPrompt section — the system prompt must stay byte-stable for
- * the provider prefix cache). `memory_write` / `memory_list` /
+ * the provider prefix cache). The row is epoch-pinned: an in-place replace is
+ * allowed only right after this session's own compaction (whose cache
+ * invalidation the refresh rides); store changes between compactions pin the
+ * row byte-stable instead of busting the prefix. `memory_write` / `memory_list` /
  * `memory_forget` give the agent an explicit memory API. Harvest and
  * injection are fully fault-isolated: a failure only logs a warning, never
  * reaches the host event stream or the agent waterfall.
@@ -171,13 +174,38 @@ export function findLastMemoryRow(session: LiveSessionLike): { readonly seq: num
 }
 
 /**
+ * Whether this session has committed a compaction AFTER the surfaced memory
+ * row was written (epoch pinning, spec): between compactions the row is
+ * deliberately pinned — a store change (this session's own memory_write or
+ * another session's write/harvest) must NOT replace the row mid-epoch,
+ * because the row sits at the head of the prefix and an in-place replace
+ * invalidates the whole cached conversation. A compaction already busts
+ * that cache, so a refresh riding the epoch boundary is free.
+ * @param session - the live session (its event log).
+ * @param rowSeq - the surfaced memory row's seq.
+ * @returns true when a compaction/summary event exists at a seq after the row.
+ */
+function sessionCompactedSince(session: LiveSessionLike, rowSeq: number): boolean {
+  const events = session.snapshotEvents() as readonly (MemoryScanEvent | undefined)[]
+  for (let index = events.length - 1; index > rowSeq; index -= 1) {
+    if (events[index]?.type === 'compaction/summary') return true
+  }
+  return false
+}
+
+/**
  * Decide the injection for one pre-step (pure over the live session + store):
  * assemble the block for the session's workspace under the dual-pool budget,
  * build the context message with its digest, and compare against the last
  * surfaced memory row:
  * - no row + non-empty block → append the fresh row;
  * - row + same digest → no-op (row is byte-stable);
- * - row + differing digest + non-empty block → replace in place;
+ * - row + differing digest + compaction since the row (epoch boundary) →
+ *   replace in place — the refresh rides the cache invalidation the
+ *   compaction already caused;
+ * - row + differing digest + NO compaction since the row → no-op (epoch
+ *   pinning: the block stays pinned to the session's last epoch — its start
+ *   or its latest compaction — and store changes wait for the next epoch);
  * - empty block → never inject (a stale row, if any, is left on the surface —
  *   documented edge, README).
  * @param store - the memory store.
@@ -195,6 +223,7 @@ export function planMemoryInjection(store: MemoryStore, session: LiveSessionLike
   if (row === undefined) return { kind: 'append', message }
   const digest = (message.source as { readonly digest?: string }).digest
   if (digest !== undefined && row.digest === digest) return { kind: 'none' }
+  if (!sessionCompactedSince(session, row.seq)) return { kind: 'none' }
   return { kind: 'replace', message, rowSeq: row.seq }
 }
 

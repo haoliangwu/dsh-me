@@ -11,7 +11,7 @@
 - **上下文注入。** 挂在 `agent/pre-step`（每次 step 开始前，晚于 inbox claim 与 system prompt 组装），把记忆块做成一行引导语 + 块文本的持久化 context `user/message` 行，source 为 `{kind: 'plugin', plugin: 'dsh-memory', digest: sha256(归一化全文)}`。
   - **为什么不用 systemPrompt section**：动态 section 每次组装都改 system prompt 字节，store 一变整段前缀缓存失效。持久行只在记忆真正变化时才原位替换（`surfaceOp: replace`，startSeq=endSeq=原行 seq），system prompt 字节恒定，provider prefix cache 大部分 step 全程命中。
   - **首次注入**：surface 上无 dsh-memory 行且记忆块非空 → 本 step 的 enter 消息尾部追加该行（与 harness RuntimeContextProjection / magic-context m0/m1 同一投递路径；循环会把 enter 消息持久化成 durable user/message）。
-  - **变更生效**：已有行 + digest 不同 + 块非空 → 原位替换该行（位置不变，内容与 digest 即刻更新）。工具「立即生效」语义不变：下个 pre-step 的 digest 比较即触发替换。行不存在或 digest 相同 → 无操作。
+  - **变更生效（epoch pinning）**：已有行 + digest 相同 → 无操作。已有行 + digest 不同：仅当本会话在该行之后 commit 过 compaction（epoch 边界）才原位替换（`surfaceOp: replace`，startSeq=endSeq=原行 seq）——刷新搭载 compaction 自己造成的缓存失效；epoch（会话起点或最近一次 compaction）之内的一切 store 变化——本会话自己的 `memory_write`、其他会话的写入或收割——一律钉住不换行，等下个 epoch 或新会话再进入（自己的写入内容此时就在对话历史里；compact 恰好把这段历史压掉、需要回捞的时刻，也正是刷新点）。行不存在 → 尾部追加（零缓存损失）。需要立即拿到外部记忆：显式 `/compact` 即刷新开关。
   - **空块永不注入**；若 surface 上已有旧行，会留到会话结束（边界：记忆全清后旧行不再刷新，token 代价是注入一次历史块；重开会话即消失）。
   - **故障隔离**：注入路径与收割同纪律——全部 try/catch，失败只记 warning，绝不向 waterfall 抛错。
 - **三级记忆。** `global`（跨 workspace，用户偏好类）/ `workspace`（默认，按 cwd 隔离）/ `session`（会话笔记：跨 compaction 存活，会话结束自动清除）。

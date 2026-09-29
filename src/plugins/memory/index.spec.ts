@@ -292,10 +292,11 @@ describe('pre-step injection (agent/pre-step)', () => {
     expect(session.appends).toHaveLength(1)
   })
 
-  it('replaces the stale row in place with the fresh content and digest, without enter messages', async () => {
+  it('replaces the stale row in place after a compaction (epoch boundary), without enter messages', async () => {
     const mounted = mount()
     const oldBlock = '## Project Memory\n<project-memory>\n<note id="1" scope="workspace">old fact</note>\n</project-memory>'
-    const session = fakeSession('/work/a', 's1', [memoryRow(messageText(oldBlock))])
+    // Row at seq 0, a committed compaction after it at seq 1: the epoch gate opens.
+    const session = fakeSession('/work/a', 's1', [memoryRow(messageText(oldBlock)), { type: 'compaction/summary', data: {} }])
     await mounted.executes('memory_write', { content: 'new fact' }, { agent: { id: 's1', session } })
     const decision = await mounted.prestep(session)
     // No enter-message injection: the replace path persists the row directly.
@@ -312,16 +313,7 @@ describe('pre-step injection (agent/pre-step)', () => {
     expect((data.source as unknown as { digest: string }).digest).not.toBe(digestOf(messageText(oldBlock)))
   })
 
-  it('never injects when the assembled block is empty', async () => {
-    const mounted = mount()
-    const session = fakeSession()
-    const decision = await mounted.prestep(session)
-    expect(injectedMemoryMessage(decision)).toBeUndefined()
-    expect(session.appends).toEqual([])
-    expect(downstreamMessages(decision)).toHaveLength(1)
-  })
-
-  it('takes effect between steps: a store write after a fresh append replaces the row on the next pre-step', async () => {
+  it('pins the row mid-epoch: a store write alone does not replace it', async () => {
     const mounted = mount()
     const session = fakeSession()
     const sibling = fakeSession('/work/a', 's2')
@@ -333,14 +325,53 @@ describe('pre-step injection (agent/pre-step)', () => {
     // The harness persists decision messages as surface rows; mirror that.
     if (firstMemory !== undefined) persistMemoryRow(session, firstMemory)
     expect(session.appends).toHaveLength(1)
-    // Store write between steps (takes effect immediately: next pre-step).
+    // Store write between steps (own memory_write): the row is pinned to the
+    // session's epoch — no compaction since the row, so no replace, no cache bust.
     await mounted.executes('memory_write', { content: 'fresh workspace fact' }, { agent: { id: 's1', session } })
-    // Step 2: the surfaced row's digest is stale → in-place replace, no new enter message.
     const second = await mounted.prestep(session)
     expect(injectedMemoryMessage(second)).toBeUndefined()
-    expect(session.appends).toHaveLength(2)
-    const append = session.appends[1]
-    const opts = append?.opts as { surfaceOp: { op: string; startSeq: number; endSeq: number }; sourceEventSeqs: number[] }
+    expect(session.appends).toHaveLength(1)
+    // A compaction commits: the epoch gate opens and the next pre-step refreshes.
+    session.append('compaction/summary', {}, undefined)
+    const third = await mounted.prestep(session)
+    expect(injectedMemoryMessage(third)).toBeUndefined()
+    expect(session.appends).toHaveLength(3) // row + compaction event + replace
+    const refresh = session.appends[2]?.opts as { surfaceOp: { op: string; startSeq: number; endSeq: number } }
+    expect(refresh.surfaceOp).toEqual({ op: 'replace', startSeq: 0, endSeq: 0 })
+    const data = session.appends[2]?.data as UserMessage
+    expect((data.content[0] as { text: string }).text).toContain('fresh workspace fact')
+  })
+
+  it('never injects when the assembled block is empty', async () => {
+    const mounted = mount()
+    const session = fakeSession()
+    const decision = await mounted.prestep(session)
+    expect(injectedMemoryMessage(decision)).toBeUndefined()
+    expect(session.appends).toEqual([])
+    expect(downstreamMessages(decision)).toHaveLength(1)
+  })
+
+  it('picks up an external session\'s write only at the next epoch boundary', async () => {
+    const mounted = mount()
+    const session = fakeSession()
+    const sibling = fakeSession('/work/a', 's2')
+    // Step 1: no row yet → the decision carries the memory message.
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1], SUMMARY_TEXT))
+    const first = await mounted.prestep(session)
+    const firstMemory = injectedMemoryMessage(first)
+    expect(firstMemory).toBeDefined()
+    if (firstMemory !== undefined) persistMemoryRow(session, firstMemory)
+    expect(session.appends).toHaveLength(1)
+    // A sibling writes between steps: pinned — the row keeps the epoch's block.
+    await mounted.executes('memory_write', { content: 'fresh workspace fact' }, { agent: { id: 's2', session: sibling } })
+    const second = await mounted.prestep(session)
+    expect(injectedMemoryMessage(second)).toBeUndefined()
+    expect(session.appends).toHaveLength(1)
+    // This session compacts: the epoch gate opens, the sibling's fact rides in.
+    session.append('compaction/summary', {}, undefined)
+    const third = await mounted.prestep(session)
+    expect(session.appends).toHaveLength(3) // row + compaction event + replace
+    const opts = session.appends[2]?.opts as { surfaceOp: { op: string; startSeq: number; endSeq: number } }
     expect(opts.surfaceOp).toEqual({ op: 'replace', startSeq: 0, endSeq: 0 })
   })
 
