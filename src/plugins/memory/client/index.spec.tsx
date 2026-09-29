@@ -216,15 +216,27 @@ describe('MemoryView host posture', () => {
 })
 
 describe('prepareMemoryMarkdown (wire-tag hiding)', () => {
-  it('drops structural tags and keeps heading, intro, and note content (single entry)', () => {
+  it('drops structural tags, keeps heading/intro, and captions the note (single entry)', () => {
     const input = '## Project Memory\nKnowledge from previous sessions.\n\n<project-memory>\n<note id="1" scope="global">user prefers terse replies</note>\n</project-memory>'
     expect(prepareMemoryMarkdown(input)).toBe(
-      '## Project Memory\nKnowledge from previous sessions.\n\nuser prefers terse replies')
+      '## Project Memory\nKnowledge from previous sessions.\n\n> Note · global · #1\n\nuser prefers terse replies')
   })
 
-  it('strips note tags to bare content, each note its own paragraph', () => {
+  it('converts each note to a scope/id caption plus its own content paragraph', () => {
     const input = '<note id="14" scope="workspace">alpha</note>\n<note id="13" scope="global">beta</note>'
-    expect(prepareMemoryMarkdown(input)).toBe('alpha\n\nbeta')
+    expect(prepareMemoryMarkdown(input)).toBe(
+      '> Note · workspace · #14\n\nalpha\n\n> Note · global · #13\n\nbeta')
+  })
+
+  it('renders a multi-line note as caption + content with the closing tag stripped', () => {
+    const input = '<note id="29" scope="workspace">ragas 二次审查重点清单：\n\n事实错误类（最严重）：\n- Payment-Maxis-013：BE 答 non-refundable，错\n\n复核口径沿用既有约定。</note>'
+    expect(prepareMemoryMarkdown(input)).toBe(
+      '> Note · workspace · #29\n\nragas 二次审查重点清单：\n\n事实错误类（最严重）：\n- Payment-Maxis-013：BE 答 non-refundable，错\n\n复核口径沿用既有约定。')
+  })
+
+  it('renders a note whose content starts on the line after the open tag', () => {
+    const input = '<note id="7" scope="session">\nfirst line\n</note>'
+    expect(prepareMemoryMarkdown(input)).toBe('> Note · session · #7\n\nfirst line')
   })
 
   it('converts checkpoint open tags to date/session caption lines', () => {
@@ -256,7 +268,8 @@ describe('prepareMemoryMarkdown (wire-tag hiding)', () => {
     const prepared = prepareMemoryMarkdown(input)
     // No wire markup survives — wrapper, note, and checkpoint tags all gone.
     expect(prepared).not.toMatch(/<\/?(?:project-memory|note|checkpoint)\b/)
-    // One muted metadata caption per checkpoint, with date + short session id.
+    // One muted metadata caption per entry: checkpoints carry date + short
+    // session id, notes carry scope + store id.
     expect(prepared.match(/^> Checkpoint · /gm)).toHaveLength(2)
     expect(prepared).toContain('> Checkpoint · 2026-09-24 · session-abcd…7890')
     expect(prepared).toContain('> Checkpoint · 2026-09-23 · session-99887766')
@@ -265,6 +278,8 @@ describe('prepareMemoryMarkdown (wire-tag hiding)', () => {
     expect(prepared).toBe([
       '## Project Memory',
       'Knowledge from previous sessions. May be stale; correct via memory_write.',
+      '',
+      '> Note · workspace · #14',
       '',
       'user prefers terse replies',
       '',

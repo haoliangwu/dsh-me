@@ -39,7 +39,7 @@ export interface MemoryViewInjected {
 
 /** Every user-facing string of the tab, exported so the spec pins copy to one source. */
 export const MEMORY_VIEW_COPY = {
-  caption: "The memory block injected for this session — wire-format tags hidden, content identical to the injected block.",
+  caption: "The memory block injected for this session — wire-format tags shown as metadata captions, content otherwise unedited.",
   loading: 'Loading memory block…',
   error: "Couldn't load the memory block.",
   retry: 'Retry',
@@ -62,8 +62,8 @@ export const MEMORY_MARKDOWN_LABELS: MarkdownLabels = {
  */
 const TAG_LINE = /^(\s*)(<\/?[a-zA-Z][^>]*>)\s*$/
 
-/** A single-line note entry: `<note id="14" scope="workspace">content</note>`. */
-const NOTE_LINE = /^<note\s+[^>]*>(.*)<\/note>$/
+/** A note open tag (attributes captured), possibly followed by same-line content. The wire is plugin-generated: attribute values never contain `>` and the closing `</note>` only ever appears at a line end. */
+const NOTE_OPEN = /^<note\s+([^>]*)>(.*)$/
 
 /** A checkpoint open tag carrying its provenance attributes. */
 const CHECKPOINT_OPEN = /^<checkpoint\s+([^>]*)>$/
@@ -73,15 +73,16 @@ const ATTRIBUTE = /([a-zA-Z][\w-]*)="([^"]*)"/g
 
 /**
  * Pure wrapper / closing tag lines with no content of their own. Hidden from
- * the view entirely — the wire bytes stay untouched upstream.
+ * the view entirely — the wire bytes stay untouched upstream. A note OPEN tag
+ * is not structural here: NOTE_OPEN renders it as a caption, because a note's
+ * content may span lines and the open tag needs its own emission.
  */
 function isStructuralTag(trimmedLine: string): boolean {
   return (
     trimmedLine === '<project-memory>' ||
     trimmedLine === '</project-memory>' ||
     trimmedLine === '</note>' ||
-    trimmedLine === '</checkpoint>' ||
-    /^<note\s+[^>]*>$/.test(trimmedLine)
+    trimmedLine === '</checkpoint>'
   )
 }
 
@@ -107,11 +108,32 @@ function checkpointCaption(attrs: string): string {
 }
 
 /**
+ * The muted provenance caption that replaces a raw `<note …>` open tag,
+ * symmetric with {@link checkpointCaption}: `> Note · workspace · #29`.
+ * The store id doubles as the `memory_forget` handle.
+ * @param attrs - the attribute text between `<note` and `>`.
+ * @returns one markdown blockquote line.
+ */
+function noteCaption(attrs: string): string {
+  const fields = new Map<string, string>()
+  for (const match of attrs.matchAll(ATTRIBUTE)) fields.set(match[1], match[2])
+  const parts = ['Note']
+  const scope = fields.get('scope')
+  if (scope !== undefined) parts.push(scope)
+  const id = fields.get('id')
+  if (id !== undefined) parts.push(`#${id}`)
+  return `> ${parts.join(' · ')}`
+}
+
+/**
  * View-side markdown preparation (presentation only — wire bytes untouched).
  * The wire-format tags are hidden from the rendered view:
  * - pure wrapper / closing tag lines (`<project-memory>`, `</note>`,
  *   `</checkpoint>`, …) drop out entirely;
- * - a content-bearing note line keeps its content, tags stripped;
+ * - a `<note …>` open tag becomes a muted metadata caption line
+ *   (`> Note · scope · #id`) exactly like a checkpoint's; a note's content
+ *   may span lines, so everything up to the closing `</note>` is passed
+ *   through as content (the closer itself is stripped);
  * - a `<checkpoint …>` open tag becomes a muted metadata caption line
  *   (`> Checkpoint · date · short session id`) that separates entries.
  * Each of those emitted units gets its own paragraph, so entries never glue
@@ -141,16 +163,59 @@ export function prepareMemoryMarkdown(block: string): string {
     out.push(text)
     breakPending = true // require a blank line after (consumed by next emission)
   }
+  // Ordinary content line (may be blank): pass through, honoring a pending
+  // paragraph break (the blank line itself satisfies it).
+  const emitOrdinary = (text: string): void => {
+    if (breakPending) {
+      ensureBreak()
+      breakPending = false
+      if (text.trim() === '') return // the blank we just pushed is this one
+    } else if (text.trim() === '') {
+      if (out.length === 0 || out[out.length - 1] === '') return // collapse runs
+    }
+    out.push(text)
+  }
+  // A pure tag line that is not wire structure: fenced + isolated so it
+  // cannot open a CommonMark HTML block. A backtick inside the tag needs a
+  // double fence and padding spaces per CommonMark code-span rules.
+  const fenceTagLine = (line: string): boolean => {
+    const tag = TAG_LINE.exec(line)
+    if (tag === null) return false
+    const [, indent, rawTag] = tag
+    const fence = rawTag.includes('`') ? '``' : '`'
+    const inner = fence === '`' ? rawTag : ` ${rawTag} `
+    pushIsolated(`${indent}${fence}${inner}${fence}`)
+    return true
+  }
+  // Inside a multi-line note's content: everything until the closing
+  // </note> (stripped from its line end) is content.
+  const stripNoteCloser = (text: string): string => text.endsWith('</note>') ? text.slice(0, -'</note>'.length) : text
+  let inNote = false
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     const trimmed = line.trim()
+    if (inNote) {
+      if (trimmed.endsWith('</note>')) {
+        const rest = stripNoteCloser(trimmed)
+        inNote = false
+        if (rest.trim() !== '') emitOrdinary(rest)
+        continue
+      }
+      if (fenceTagLine(line)) continue
+      emitOrdinary(line)
+      continue
+    }
     if (isStructuralTag(trimmed)) {
       if (out.length > 0 && out[out.length - 1] !== '') breakPending = true
       continue
     }
-    const note = NOTE_LINE.exec(trimmed)
+    const note = NOTE_OPEN.exec(trimmed)
     if (note !== null) {
-      pushIsolated(note[1])
+      pushIsolated(noteCaption(note[1]))
+      const rest = note[2]
+      inNote = !rest.endsWith('</note>')
+      const body = stripNoteCloser(rest)
+      if (body.trim() !== '') emitOrdinary(body)
       continue
     }
     const checkpoint = CHECKPOINT_OPEN.exec(trimmed)
@@ -158,27 +223,8 @@ export function prepareMemoryMarkdown(block: string): string {
       pushIsolated(checkpointCaption(checkpoint[1]))
       continue
     }
-    const tag = TAG_LINE.exec(line)
-    if (tag !== null) {
-      // Unknown pure tag line (not wire structure): still fenced + isolated
-      // so it cannot open a CommonMark HTML block. A backtick inside the tag
-      // needs a double fence and padding spaces per CommonMark code-span rules.
-      const [, indent, rawTag] = tag
-      const fence = rawTag.includes('`') ? '``' : '`'
-      const inner = fence === '`' ? rawTag : ` ${rawTag} `
-      pushIsolated(`${indent}${fence}${inner}${fence}`)
-      continue
-    }
-    // Ordinary content line (may be blank): pass through, honoring a
-    // pending paragraph break (the blank line itself satisfies it).
-    if (breakPending) {
-      ensureBreak()
-      breakPending = false
-      if (line.trim() === '') continue // the blank we just pushed is this one
-    } else if (line.trim() === '') {
-      if (out.length === 0 || out[out.length - 1] === '') continue // collapse runs
-    }
-    out.push(line)
+    if (fenceTagLine(line)) continue
+    emitOrdinary(line)
   }
   return out.join('\n')
 }
