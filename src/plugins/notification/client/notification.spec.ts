@@ -269,7 +269,7 @@ describe('playChime', () => {
   })
 })
 
-describe('pendingQuestionNotifications (test 4: question trigger from pendingInteractions)', () => {
+describe('pendingQuestionNotifications (test 4: question trigger from the uiSession pending-interaction face)', () => {
   it('fires a new question key and marks it seen', () => {
     const result = pendingQuestionNotifications(
       new Set(),

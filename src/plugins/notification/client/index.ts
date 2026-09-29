@@ -11,9 +11,10 @@
  * `turn/end`, whose reason maps to an outcome per spec. Question: the
  * shipped answerer claims the `user-questions/request` waterfall before
  * profile plugins load, so the trigger is read from `ctx.uiSession
- * .pendingInteractions` instead (the answerer publishes each PendingQuestion
- * there) — new keys fire, keys already pending at plugin start are seeded
- * seen without re-notifying, unknown domains are marked seen without firing.
+ * .sessionStatus` instead — 0.1.7's pending-interaction face, a per-session
+ * row publishing the highest-precedence pending interaction; new question
+ * entries fire, entries already pending at plugin start are seeded seen
+ * without re-notifying, unknown domains are marked seen without firing.
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
@@ -62,6 +63,11 @@ interface SessionWindowShape {
   readonly change: { readonly kind: string; readonly entries?: readonly SessionEventLikeEntryShape[] }
 }
 
+/** One session's status row: only the pending-interaction face is read. */
+interface SessionStatusRowShape {
+  readonly pendingInteraction: PendingInteractionShape | undefined
+}
+
 /** The slices of the client Context this plugin reads (structural). */
 interface NotificationCtx {
   connection: { rpc: { call(channel: string, endpoint: string, payload: unknown): Promise<RpcResult<unknown>> } }
@@ -73,9 +79,9 @@ interface NotificationCtx {
     binding(id: string): { readonly sessionId: string; readonly eventSource: { subscribe(listener: () => void): () => void; getSnapshot(): SessionWindowShape } } | undefined
   }
   uiSession: {
-    readonly pendingInteractions: {
+    readonly sessionStatus: {
       subscribe(listener: () => void): () => void
-      getSnapshot(): ReadonlyMap<string, PendingInteractionShape>
+      getSnapshot(): ReadonlyMap<string, SessionStatusRowShape>
     }
   }
 }
@@ -169,11 +175,21 @@ export function apply(ctx: ClientContext): void {
     return dispose
   }, 'dsh-ui-notification: watch mirrored sessions')
 
-  // ── question trigger: pendingInteractions (shipped answerer claims the
-  // ── user-questions/request waterfall before profile plugins load) ────────
+  // ── question trigger: sessionStatus (shipped answerer claims the
+  // ── user-questions/request waterfall before profile plugins load and
+  // ── publishes each PendingQuestion as its session's pendingInteraction) ──
   let seenKeys: ReadonlySet<string> = new Set()
+  const pendingInteractionsOf = (snapshot: ReadonlyMap<string, SessionStatusRowShape>): ReadonlyMap<string, PendingInteractionShape> => {
+    const interactions = new Map<string, PendingInteractionShape>()
+    for (const [sessionId, row] of snapshot) {
+      const interaction = row.pendingInteraction
+      if (interaction === undefined) continue
+      interactions.set(sessionId, interaction)
+    }
+    return interactions
+  }
   const reconcileQuestions = (): void => {
-    const { keys, fired } = pendingQuestionNotifications(seenKeys, scoped.uiSession.pendingInteractions.getSnapshot())
+    const { keys, fired } = pendingQuestionNotifications(seenKeys, pendingInteractionsOf(scoped.uiSession.sessionStatus.getSnapshot()))
     if (keys.length > 0) seenKeys = new Set([...seenKeys, ...keys])
     for (const item of fired) {
       if (!shouldNotify(document.visibilityState, config.notifyQuestion)) continue
@@ -184,9 +200,9 @@ export function apply(ctx: ClientContext): void {
     // Seed the seen-set from the initial snapshot without notifying: a
     // question already pending before plugin load (HMR/reconnect re-delivery)
     // must not re-fire; a fresh page load legitimately re-notifies it.
-    const initial = scoped.uiSession.pendingInteractions.getSnapshot()
+    const initial = pendingInteractionsOf(scoped.uiSession.sessionStatus.getSnapshot())
     seenKeys = new Set([...initial.values()].map(interaction => interaction.key))
-    const dispose = scoped.uiSession.pendingInteractions.subscribe(reconcileQuestions)
+    const dispose = scoped.uiSession.sessionStatus.subscribe(reconcileQuestions)
     return dispose
   }, 'dsh-ui-notification: watch pending interactions')
 
