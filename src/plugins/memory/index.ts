@@ -384,7 +384,7 @@ export function apply(ctx: Context, config: Config): void {
 
     // The Memory tab's data path: a plain webServer prefix route speaking the
     // Connection-RPC client-request/server-response envelope (peak-rate/
-    // undo/shortcuts serveChannel pattern — `connection.rpc.handle()` is
+    // undo serveChannel pattern — `connection.rpc.handle()` is
     // unreachable from the profile plugin tree). Endpoint `block` recomputes
     // the block through the SAME pure functions the pre-step injection uses
     // (`assembleMemoryBlock` over `store.listActive`), so the tab renders
@@ -462,7 +462,7 @@ export function apply(ctx: Context, config: Config): void {
  * dsh-client-connection's rpcFetchHandler semantics (POST-only, JSON
  * client-request envelope, server-response envelope out) so the browser-side
  * `connection.rpc.call()` keeps working unchanged. Copied verbatim from the
- * peak-rate/undo/shortcuts serveChannel (profile plugin trees cannot use
+ * peak-rate/undo serveChannel (profile plugin trees cannot use
  * `connection.rpc.handle`; each entry keeps its own copy).
  */
 async function serveChannel(

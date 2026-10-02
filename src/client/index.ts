@@ -11,7 +11,6 @@ import { apply as applyNotification, inject as notificationInject } from '../plu
 import { apply as applyBtw, inject as btwInject } from '../plugins/btw/client/index.ts'
 import { apply as applyReference, inject as referenceInject } from '../plugins/reference/client/index.ts'
 import { apply as applyUndo, inject as undoInject } from '../plugins/undo/client/index.ts'
-import { apply as applyShortcuts, inject as shortcutsInject } from '../plugins/shortcuts/client/index.ts'
 import { apply as applyMemory, inject as memoryInject } from '../plugins/memory/client/index.ts'
 
 /** Required services: the union of every aggregated client half. */
@@ -21,7 +20,6 @@ export const inject = [...new Set([
   ...btwInject,
   ...referenceInject,
   ...undoInject,
-  ...shortcutsInject,
   ...memoryInject,
 ])]
 
@@ -35,6 +33,5 @@ export function apply(ctx: Context): void {
   applyBtw(ctx)
   applyReference(ctx)
   applyUndo(ctx)
-  applyShortcuts(ctx)
   applyMemory(ctx)
 }

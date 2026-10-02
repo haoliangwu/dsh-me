@@ -2,7 +2,7 @@
 /**
  * dsh-memory browser-half contract: boot the REAL client apply over a fake
  * cordis Context (hand-rolled slots registry / connection / sessions — the
- * same seams shortcuts-engine.spec uses; no dsh-client-test-runtime in this
+ * same seams undo-engine.spec uses; no dsh-client-test-runtime in this
  * repo), then render the registered MemoryView with its inject face. Only
  * external behavior is asserted: the tab registration shape (id/order/label),
  * one RPC on mount with the right `{sessionId, cwd}`, markdown block
