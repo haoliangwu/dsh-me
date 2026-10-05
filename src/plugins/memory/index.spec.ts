@@ -85,6 +85,20 @@ function persistMemoryRow(session: FakeSession, message: UserMessage): void {
   session.append('user/message', message, { surfaceOp: 'append' })
 }
 
+/** Persist the injected memory message of a pre-step decision as the surface row (asserting it exists), like the harness's durable append. */
+function persistInjectedRow(session: FakeSession, decision: PreStepDecisionLike): void {
+  const memory = injectedMemoryMessage(decision)
+  expect(memory).toBeDefined()
+  if (memory !== undefined) persistMemoryRow(session, memory)
+}
+
+/** Resolve the /memory-tidy command definition, failing the test when it is not registered. */
+function tidyCommand(mounted: Mounted): NonNullable<Mounted['commands'][number]> {
+  const command = mounted.commands[0]
+  if (command === undefined) throw new Error('memory-tidy not registered')
+  return command
+}
+
 interface CheckpointEvent { readonly seq: number; readonly time: number; readonly type: string; readonly data?: unknown; readonly sourceEventSeqs?: unknown }
 
 const SUMMARY_TEXT = '## Primary Request and Intent\n- ship the plugin\n\n## Key Technical Concepts\n- node:sqlite\n\n## Next Step\n- drop me'
@@ -302,10 +316,8 @@ describe('pre-step injection (agent/pre-step)', () => {
     const sibling = fakeSession('/work/a', 's2')
     await mounted.fire('session/event', sibling, checkpointEvent(10, [1], SUMMARY_TEXT))
     const first = await mounted.prestep(session)
-    const memory = injectedMemoryMessage(first)
-    expect(memory).toBeDefined()
     // The harness persisted the decision message as a surface row; mirror that.
-    if (memory !== undefined) persistMemoryRow(session, memory)
+    persistInjectedRow(session, first)
     // Second pre-step with an unchanged store: the row is byte-stable, the
     // digest matches, nothing is appended or replaced.
     const second = await mounted.prestep(session)
@@ -752,8 +764,7 @@ describe('memory-tidy command', () => {
 
   it('steers the receiving agent with the tidy prompt and acknowledges success', async () => {
     const mounted = mount()
-    const command = mounted.commands[0]
-    if (command === undefined) throw new Error('memory-tidy not registered')
+    const command = tidyCommand(mounted)
     const session = fakeSession('/work/a', 's1')
     const steer = vi.fn()
     const result = await command.handler({
@@ -775,8 +786,7 @@ describe('memory-tidy command', () => {
 
   it('forwards the raw input as an extra constraint into the steered prompt', async () => {
     const mounted = mount()
-    const command = mounted.commands[0]
-    if (command === undefined) throw new Error('memory-tidy not registered')
+    const command = tidyCommand(mounted)
     const steer = vi.fn()
     await command.handler({
       agent: { session: { id: 's1', header: { cwd: '/work/a' } }, steer },
@@ -789,8 +799,7 @@ describe('memory-tidy command', () => {
 
   it('rejects without steering when the session carries no cwd (no workspace to target)', async () => {
     const mounted = mount()
-    const command = mounted.commands[0]
-    if (command === undefined) throw new Error('memory-tidy not registered')
+    const command = tidyCommand(mounted)
     const steer = vi.fn()
     const result = await command.handler({
       agent: { session: { id: 's1', header: {} }, steer },
@@ -820,9 +829,7 @@ describe('memory_forget pin drop (deleted bytes leave the injected row)', () => 
     // First injection: the harness persists the decision message as the row
     // (no compaction after it, so a mid-epoch pin would normally hold).
     const first = await mounted.prestep(session)
-    const memory = injectedMemoryMessage(first)
-    expect(memory).toBeDefined()
-    if (memory !== undefined) persistMemoryRow(session, memory)
+    persistInjectedRow(session, first)
     // Mid-epoch forget: the deleted bytes must leave the injected block at
     // the next pre-step, not at the next compaction.
     expect(await mounted.executes('memory_forget', { id: 1 }, { agent: { id: 's1', session } })).toEqual({ deleted: true })
@@ -850,9 +857,7 @@ describe('memory_forget pin drop (deleted bytes leave the injected row)', () => 
     await mounted.executes('memory_write', { content: 'alpha fact' }, { agent: { id: 's1', session: caller } })
     await mounted.executes('memory_write', { content: 'beta fact' }, { agent: { id: 's1', session: caller } })
     const first = await mounted.prestep(caller)
-    const memory = injectedMemoryMessage(first)
-    expect(memory).toBeDefined()
-    if (memory !== undefined) persistMemoryRow(caller, memory)
+    persistInjectedRow(caller, first)
     // The sibling deletes the workspace memory: only the sibling's pin drops
     // (it has no row yet); the caller's row stays pinned mid-epoch.
     expect(await mounted.executes('memory_forget', { id: 1 }, { agent: { id: 's2', session: sibling } })).toEqual({ deleted: true })
@@ -866,9 +871,7 @@ describe('memory_forget pin drop (deleted bytes leave the injected row)', () => 
     const session = fakeSession()
     await mounted.executes('memory_write', { content: 'alpha fact' }, { agent: { id: 's1', session } })
     const first = await mounted.prestep(session)
-    const memory = injectedMemoryMessage(first)
-    expect(memory).toBeDefined()
-    if (memory !== undefined) persistMemoryRow(session, memory)
+    persistInjectedRow(session, first)
     // The existing pin test owns the no-op assertion; here the point is that
     // the write alone must NOT arm the refresh.
     await mounted.executes('memory_write', { content: 'beta fact' }, { agent: { id: 's1', session } })
@@ -890,16 +893,12 @@ describe('memory-tidy post-turn sync (forget-called or not)', () => {
   async function seedRow(mounted: Mounted, session: FakeSession): Promise<void> {
     await mounted.executes('memory_write', { content: 'alpha fact' }, { agent: { id: 's1', session } })
     const first = await mounted.prestep(session)
-    const memory = injectedMemoryMessage(first)
-    expect(memory).toBeDefined()
-    if (memory !== undefined) persistMemoryRow(session, memory)
+    persistInjectedRow(session, first)
   }
 
   /** Invoke the command handler exactly like the UI does (steer ignored: the tools are driven by the test). */
   async function runTidy(mounted: Mounted): Promise<void> {
-    const command = mounted.commands[0]
-    if (command === undefined) throw new Error('memory-tidy not registered')
-    await command.handler({
+    await tidyCommand(mounted).handler({
       agent: { session: { id: 's1', header: { cwd: '/work/a' } }, steer: vi.fn() },
       rawInput: '',
       signal: new AbortController().signal,
@@ -943,6 +942,60 @@ describe('memory-tidy post-turn sync (forget-called or not)', () => {
     expect(session.appends).toHaveLength(1)
     // The transfer was consumed (digest equal): a later unrelated write does
     // NOT force a mid-epoch refresh — epoch pinning applies again.
+    await mounted.executes('memory_write', { content: 'beta fact' }, { agent: { id: 's1', session } })
+    expect(await mounted.prestep(session)).toEqual(downstreamDecision())
+    expect(session.appends).toHaveLength(1)
+  })
+
+  it('forget inside the tidy turn refreshes immediately; the turn-close re-arm is a digest-equal no-op', async () => {
+    const mounted = mount()
+    const session = fakeSession()
+    await mounted.executes('memory_write', { content: 'alpha fact' }, { agent: { id: 's1', session } })
+    await mounted.executes('memory_write', { content: 'beta fact' }, { agent: { id: 's1', session } })
+    const first = await mounted.prestep(session)
+    persistInjectedRow(session, first)
+    expect(session.appends).toHaveLength(1)
+    await runTidy(mounted)
+    // The reorg forgets alpha mid-turn: onForget arms the immediate path, so
+    // the very next pre-step (still inside the tidy turn) replaces the row.
+    expect(await mounted.executes('memory_forget', { id: 1 }, { agent: { id: 's1', session } })).toEqual({ deleted: true })
+    expect(await mounted.prestep(session)).toEqual(downstreamDecision())
+    expect(session.appends).toHaveLength(2)
+    const opts = session.appends[1]?.opts as { surfaceOp: { op: string } }
+    expect(opts.surfaceOp.op).toBe('replace')
+    const text = (session.appends[1]?.data as UserMessage).content[0] as { text: string }
+    expect(text.text).toContain('beta fact')
+    expect(text.text).not.toContain('alpha fact')
+    // Turn close re-arms for the post-turn step: the digest equals the just-
+    // refreshed row, so the arming is consumed as a no-op — a later write
+    // stays pinned (no leak, no double replace).
+    await mounted.fire('agent/turn-stopping', { agent: { session: { id: 's1' } } })
+    expect(await mounted.prestep(session)).toEqual(downstreamDecision())
+    expect(session.appends).toHaveLength(2)
+    await mounted.executes('memory_write', { content: 'gamma fact' }, { agent: { id: 's1', session } })
+    expect(await mounted.prestep(session)).toEqual(downstreamDecision())
+    expect(session.appends).toHaveLength(2)
+  })
+
+  it('leaves the stale row untouched when the tidy empties the store (documented boundary), consuming the arming', async () => {
+    const mounted = mount()
+    const session = fakeSession()
+    await mounted.executes('memory_write', { content: 'alpha fact' }, { agent: { id: 's1', session } })
+    const first = await mounted.prestep(session)
+    persistInjectedRow(session, first)
+    expect(session.appends).toHaveLength(1)
+    await runTidy(mounted)
+    // The reorg deletes the only memory: the block becomes empty, so the
+    // never-inject rule applies — the stale row stays on the surface
+    // (README boundary: 记忆全清后旧行不再刷新，留到会话结束).
+    expect(await mounted.executes('memory_forget', { id: 1 }, { agent: { id: 's1', session } })).toEqual({ deleted: true })
+    expect(await mounted.prestep(session)).toEqual(downstreamDecision())
+    expect(session.appends).toHaveLength(1)
+    // Both armings are consumed without a replace (empty block); later writes
+    // stay pinned, never forced.
+    await mounted.fire('agent/turn-stopping', { agent: { session: { id: 's1' } } })
+    expect(await mounted.prestep(session)).toEqual(downstreamDecision())
+    expect(session.appends).toHaveLength(1)
     await mounted.executes('memory_write', { content: 'beta fact' }, { agent: { id: 's1', session } })
     expect(await mounted.prestep(session)).toEqual(downstreamDecision())
     expect(session.appends).toHaveLength(1)
