@@ -379,10 +379,10 @@ export function apply(ctx: Context, config: Config): void {
   //   (the next message's step) syncs the final store, forget-called or not.
   // memory_write arms neither: its content is already on the session surface
   // (the tool result), so an injected echo would be redundant (epoch-pin
-  // semantics for own writes). Both flags are per-session, so sibling
+  // semantics for own writes). Both sets are keyed by session id, so sibling
   // sessions keep their pinned rows untouched.
-  const pendingRefresh = new Map<string, true>()
-  const tidyPending = new Map<string, true>()
+  const pendingRefresh = new Set<string>()
+  const tidyPending = new Set<string>()
   const budget: MemoryBudgetOptions = {
     maxEntryChars: config.maxEntryChars ?? DEFAULT_MAX_ENTRY_CHARS,
     maxCompactionSummaries: config.maxCompactionSummaries ?? DEFAULT_MAX_COMPACTION_SUMMARIES,
@@ -465,10 +465,8 @@ export function apply(ctx: Context, config: Config): void {
     // the persisted row, replaced in place). A forget arms the calling
     // session's refresh: the deleted bytes must leave the injected block at
     // the next pre-step, not at the next compaction.
-    disposers.push(installMemoryTools(scoped.tools, store, budget.maxEntryChars, {
-      onForget: (sessionId) => {
-        if (sessionId !== undefined) pendingRefresh.set(sessionId, true)
-      },
+    disposers.push(installMemoryTools(scoped.tools, store, budget.maxEntryChars, (sessionId) => {
+      if (sessionId !== undefined) pendingRefresh.add(sessionId)
     }))
 
     // The Memory tab's data path: a plain webServer prefix route speaking the
@@ -549,10 +547,17 @@ export function apply(ctx: Context, config: Config): void {
     // the FIRST pre-step after the turn (the next message's step) re-assembles
     // the row — whether or not the reorg called memory_forget. The transfer
     // (not a direct pre-step read) is what keeps the tidy turn's own pre-tool
-    // pre-step from consuming the flag early.
+    // pre-step from consuming the flag early. Same fault-isolation discipline
+    // as the harvest/pre-step paths: an unexpected payload (or a broken
+    // session deref) is contained to a warning, never thrown into the serial
+    // turn-stopping dispatch.
     disposers.push(scoped.on('agent/turn-stopping', (payload) => {
-      const sessionId = payload.agent.session.id
-      if (tidyPending.delete(sessionId)) pendingRefresh.set(sessionId, true)
+      try {
+        const sessionId = payload.agent.session.id
+        if (tidyPending.delete(sessionId)) pendingRefresh.add(sessionId)
+      } catch (error) {
+        ctx.logger.warn(`[dsh-memory] tidy transfer failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }))
 
     return () => {
@@ -596,7 +601,7 @@ export function apply(ctx: Context, config: Config): void {
         // the immediate path through onForget). The arming is kept out of the
         // pre-step read until the turn closes (transfer in turn-stopping), so
         // the tidy turn's own pre-tool step can never consume it early.
-        tidyPending.set(invocation.agent.session.id, true)
+        tidyPending.add(invocation.agent.session.id)
         return { kind: 'success', text: '/memory-tidy: 已生成整理 prompt 并交给 agent（见下一条消息），整理回合结束后注入记忆会自动同步' }
       },
     })

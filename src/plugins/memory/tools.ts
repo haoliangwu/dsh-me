@@ -68,32 +68,27 @@ function toListEntry(row: MemoryBlockRow): ListEntry {
 }
 
 /**
- * Optional side-effect hooks the tool registry invokes after a tool settles
- * (deliberately minimal: only memory_forget needs one).
- */
-export interface MemoryToolHooks {
-  /**
-   * Called after a successful memory_forget with the calling session id
-   * (undefined when the call carried no agent session). Lets the host drop
-   * that session's injected-row pin: the deleted memory is gone from the
-   * conversation, so the next pre-step must re-assemble the block — leaving
-   * the stale row would keep the deleted bytes model-visible until the next
-   * compaction. memory_write deliberately does NOT trigger this: a write's
-   * content is already visible on the session surface (the tool result), so
-   * an injected echo would be redundant (epoch-pin semantics for own writes).
-   */
-  onForget?: (sessionId: string | undefined) => void
-}
-
-/**
  * Register the three memory tools on the given registry.
  * @param ctx - the tool-registry face.
  * @param store - the memory store.
  * @param maxEntryChars - the entry cap: a memory_write over it is truncated at write with the segment-truncation marker.
- * @param hooks - optional side-effect hooks (see {@link MemoryToolHooks}).
+ * @param onForget - optional callback invoked after a successful memory_forget
+ *   with the calling session id (undefined when the call carried no agent
+ *   session). Lets the host drop that session's injected-row pin: the deleted
+ *   memory is gone from the conversation, so the next pre-step must
+ *   re-assemble the block — leaving the stale row would keep the deleted
+ *   bytes model-visible until the next compaction. memory_write deliberately
+ *   has no such callback: a write's content is already visible on the session
+ *   surface (the tool result), so an injected echo would be redundant
+ *   (epoch-pin semantics for own writes).
  * @returns the composite disposer unregistering all three tools.
  */
-export function installMemoryTools(ctx: ToolsLike, store: MemoryStore, maxEntryChars: number, hooks?: MemoryToolHooks): () => void {
+export function installMemoryTools(
+  ctx: ToolsLike,
+  store: MemoryStore,
+  maxEntryChars: number,
+  onForget?: (sessionId: string | undefined) => void,
+): () => void {
   const disposers: Array<() => void> = []
 
   disposers.push(ctx.register(defineTool({
@@ -233,7 +228,7 @@ export function installMemoryTools(ctx: ToolsLike, store: MemoryStore, maxEntryC
       // The one tool side-effect: a real deletion must drop the calling
       // session's injected-row pin (the deleted bytes would otherwise stay
       // model-visible until the next compaction).
-      if (deleted) hooks?.onForget?.(exec.agent?.session?.id)
+      if (deleted) onForget?.(exec.agent?.session?.id)
       return { deleted }
     },
   })))
