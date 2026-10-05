@@ -79,7 +79,10 @@ function migrate(db: DatabaseSync): void {
  * @param db - open DatabaseSync (file-backed in production, `:memory:` in tests).
  */
 export class MemoryStore {
-  constructor(private readonly db: DatabaseSync) {
+  private readonly db: DatabaseSync
+
+  constructor(db: DatabaseSync) {
+    this.db = db
     this.db.exec(DDL)
     migrate(db)
   }

@@ -19,7 +19,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { MarkdownText, type MarkdownLabels } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
 import css from './memory.module.css'
 
 /** Host payload for the `block` endpoint: the verbatim injected block ('' when there is none). */

@@ -169,7 +169,7 @@ export function installMemoryTools(ctx: ToolsLike, store: MemoryStore, maxEntryC
           },
         },
       },
-      render: (_args, value: { memories: readonly ListEntry[] }) => [{
+      render: (_args, value: { memories: readonly unknown[] }) => [{
         type: 'text',
         text: value.memories.length === 0 ? 'no memories' : JSON.stringify(value.memories),
       }],

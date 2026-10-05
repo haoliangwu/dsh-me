@@ -21,7 +21,7 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: pulls the SlotRegistry service merge (ctx.slots).
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
 import { MemoryView, type MemoryBlockResponse, type MemoryViewInjected } from './MemoryView.tsx'
 
 export type { MemoryBlockResponse, MemoryViewInjected } from './MemoryView.tsx'

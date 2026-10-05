@@ -677,11 +677,10 @@ export function digestOf(text: string): string {
  * text (any byte change in the rendered row flips the digest, so the pre-step
  * scan compares rendered bytes, not just the store blob).
  *
- * The source stays `kind: 'plugin'` (harness relationshipEvent admission
- * allows plugin-kind sources with extra members — magic-context stores
- * messageId/revision/digest the same way; only `kind: 'user'` sources are
- * restricted to kind+rpcId+clientTimeZone, the 2026-09-23 lesson). The chat
- * classes a plugin-source user row as a context row, not a user bubble, so
+ * The source uses the producer-owned kind `dsh-memory` (session format v4
+ * refuses the retired generic `kind: 'plugin'` wrapper — the same
+ * producer-owned scheme as the harness compaction's `compact-checkpoint`).
+ * The chat classes any non-`kind: 'user'` user-role row as a context row, so
  * the memory never masquerades as human input.
  * @param block - the assembled memory block (`assembleMemoryBlock` output).
  * @returns the user message payload to persist on the surface.
@@ -693,9 +692,9 @@ export function buildMemoryMessage(block: string): UserMessage {
     role: 'user',
     content: [{ type: 'text', text: content }],
     source: {
-      kind: 'plugin',
+      kind: 'dsh-memory',
       plugin: MEMORY_PLUGIN,
       digest: digestOf(content),
-    } as UserMessage['source'],
+    } as unknown as UserMessage['source'],
   }
 }

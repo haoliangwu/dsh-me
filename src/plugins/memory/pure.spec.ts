@@ -692,7 +692,7 @@ describe('buildMemoryMessage (persisted context row payload)', () => {
     expect(message.id).toMatch(/^[0-9a-f-]{36}$/)
     expect(text.text).toBe(`${MEMORY_HEADER_LINE}\n\n## Project Memory\n<project-memory>\n<note id="1" scope="global">x</note>\n</project-memory>`)
     const source = message.source as { kind: string; plugin: string; digest: string }
-    expect(source.kind).toBe('plugin')
+    expect(source.kind).toBe('dsh-memory')
     expect(source.plugin).toBe(MEMORY_PLUGIN)
     expect(source.digest).toBe(digestOf(text.text))
   })

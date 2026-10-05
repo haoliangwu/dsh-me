@@ -69,7 +69,7 @@ function memoryRow(text: string): FakeEvent {
   return {
     type: 'user/message',
     data: {
-      source: { kind: 'plugin', plugin: 'dsh-memory', digest: digestOf(text) },
+      source: { kind: 'dsh-memory', plugin: 'dsh-memory', digest: digestOf(text) },
       content: [{ type: 'text', text }],
     },
   }
@@ -162,6 +162,12 @@ function mount(config: Record<string, unknown> = {}): Mounted {
   const tools: Mounted['tools'] = []
   const warnSpy = vi.fn()
   const routes: Mounted['routes'] = []
+  const fakeWebServer = {
+    register: (route: { kind: string; path: string; handler: (req: unknown, res: unknown) => void }) => {
+      routes.push(route)
+      return () => { routes.splice(routes.indexOf(route), 1) }
+    },
+  }
   const ctx = {
     logger: { warn: warnSpy, info: vi.fn() },
     on: vi.fn((event: string, listener: (...args: unknown[]) => unknown) => {
@@ -172,12 +178,8 @@ function mount(config: Record<string, unknown> = {}): Mounted {
     tools: {
       register: (def: unknown) => { tools.push(def as Mounted['tools'][number]); return () => {} },
     },
-    webServer: {
-      register: (route: { kind: string; path: string; handler: (req: unknown, res: unknown) => void }) => {
-        routes.push(route)
-        return () => { routes.splice(routes.indexOf(route), 1) }
-      },
-    },
+    // cordis optional-service read: the plugin resolves webServer via ctx.get.
+    get: (name: string) => (name === 'webServer' ? fakeWebServer : undefined),
   }
   apply(ctx as never, Config(config) as never)
   return {
@@ -208,7 +210,7 @@ function mount(config: Record<string, unknown> = {}): Mounted {
 function injectedMemoryMessage(decision: PreStepDecisionLike): UserMessage | undefined {
   if (decision.kind !== 'enter') return undefined
   return decision.messages.find(message =>
-    (message.source as { kind?: string; plugin?: string }).kind === 'plugin'
+    (message.source as { kind?: string; plugin?: string }).kind === 'dsh-memory'
     && (message.source as { plugin?: string }).plugin === 'dsh-memory')
 }
 
@@ -216,14 +218,17 @@ function injectedMemoryMessage(decision: PreStepDecisionLike): UserMessage | und
 function downstreamMessages(decision: PreStepDecisionLike): readonly UserMessage[] {
   if (decision.kind !== 'enter') return []
   return decision.messages.filter(message =>
-    !((message.source as { kind?: string; plugin?: string }).kind === 'plugin'
+    !((message.source as { kind?: string; plugin?: string }).kind === 'dsh-memory'
       && (message.source as { plugin?: string }).plugin === 'dsh-memory'))
 }
 
 describe('plugin contract', () => {
-  it('declares the id, the tools + webServer injection, and the dual-pool config', () => {
+  it('declares the id, the tools injection (webServer optional), and the dual-pool config', () => {
     expect(name).toBe('dsh-memory')
-    expect(inject).toEqual(['tools', 'webServer'])
+    // webServer moved behind ctx.get (optional): non-web profiles must not
+    // wait on a web-plane service; the Memory tab channel mounts only when
+    // the webServer service is present.
+    expect(inject).toEqual(['tools'])
     expect(Config({})).toEqual({ maxEntryChars: 2500, maxCompactionSummaries: 2, maxManualChars: 10000 })
     expect(Config({ maxEntryChars: 9000 })).toEqual({
       maxEntryChars: 9000,
@@ -258,7 +263,7 @@ describe('pre-step injection (agent/pre-step)', () => {
     expect((memory?.content[0] as { text: string }).text).toContain('## Project Memory')
     expect((memory?.content[0] as { text: string }).text).toContain('- ship the plugin')
     const source = memory?.source as { kind: string; plugin: string; digest: string }
-    expect(source.kind).toBe('plugin')
+    expect(source.kind).toBe('dsh-memory')
     expect(source.plugin).toBe('dsh-memory')
     expect(source.digest).toMatch(/^[0-9a-f]{64}$/)
     // No in-place replace on the fresh path; the message rides the decision.
@@ -717,7 +722,7 @@ function reqOf(method: string, url: string, body: unknown, contentType = 'applic
   return {
     method,
     url,
-    headers: { 'content-type': contentType },
+    headers: { host: '127.0.0.1:3080', 'content-type': contentType },
     once: () => {},
     socket: { once: () => {} },
     [Symbol.asyncIterator]: async function* () { yield json },
