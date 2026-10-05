@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  encodeSessionReferenceUri,
   extractLastAssistantText,
   packSessionSnapshot,
   parseBtwInput,
@@ -25,7 +26,8 @@ describe('parseBtwInput (dual target channel)', () => {
   })
 
   it('parses a canonical mention and strips it from the question', () => {
-    expect(parseBtwInput('@[执行会话](dsh-session:sess-b) 把第 2 步做完')).toEqual({
+    const uri = encodeSessionReferenceUri('sess-b')
+    expect(parseBtwInput(`@[执行会话](${uri}) 把第 2 步做完`)).toEqual({
       kind: 'parsed',
       target: { kind: 'mention', sessionId: 'sess-b' },
       question: '把第 2 步做完',
@@ -33,7 +35,8 @@ describe('parseBtwInput (dual target channel)', () => {
   })
 
   it('parses a mention with an empty label', () => {
-    expect(parseBtwInput('@[](dsh-session:sess-c) hi')).toMatchObject({
+    const uri = encodeSessionReferenceUri('sess-c')
+    expect(parseBtwInput(`@[](${uri}) hi`)).toMatchObject({
       kind: 'parsed',
       target: { kind: 'mention', sessionId: 'sess-c' },
       question: 'hi',
@@ -41,11 +44,16 @@ describe('parseBtwInput (dual target channel)', () => {
   })
 
   it('prefers the mention when both channels are present', () => {
-    expect(parseBtwInput('@[A](dsh-session:sess-a) 标题 :: 问题')).toEqual({
+    const uri = encodeSessionReferenceUri('sess-a')
+    expect(parseBtwInput(`@[A](${uri}) 标题 :: 问题`)).toEqual({
       kind: 'parsed',
       target: { kind: 'mention', sessionId: 'sess-a' },
       question: '标题 :: 问题',
     })
+  })
+
+  it('rejects a legacy bare-id mention (non-canonical URI)', () => {
+    expect(parseBtwInput('@[x](dsh-session:s1) hi')).toMatchObject({ kind: 'error' })
   })
 
   it('parses the `标题 :: 问题` fallback', () => {
@@ -67,7 +75,7 @@ describe('parseBtwInput (dual target channel)', () => {
   it('rejects an empty question', () => {
     expect(parseBtwInput('   ')).toEqual({ kind: 'error', text: '/btw needs a question' })
     expect(parseBtwInput('标题 :: ')).toMatchObject({ kind: 'error' })
-    expect(parseBtwInput('@[x](dsh-session:s1) ')).toMatchObject({ kind: 'error' })
+    expect(parseBtwInput(`@[x](${encodeSessionReferenceUri('s1')}) `)).toMatchObject({ kind: 'error' })
   })
 
   it('rejects an empty title before ::', () => {
@@ -175,39 +183,41 @@ describe('selectSnapshotSegments (head/tail budget)', () => {
   })
 })
 
-describe('packSessionSnapshot (structured block)', () => {
+describe('packSessionSnapshot (tag-safe JSON envelope)', () => {
   const meta = { sessionId: 'sess-b', title: '执行会话', cwd: '/work/a' }
 
   it('carries session meta and labeled head/tail segments', () => {
     const packed = packSessionSnapshot(meta, [{ role: 'user', text: 'hi' }], 1000)
     expect(packed).toContain('<referenced-sessions>')
-    expect(packed).toContain('id="sess-b"')
-    expect(packed).toContain('title="执行会话"')
-    expect(packed).toContain('cwd="/work/a"')
-    expect(packed).toContain('<head bytes=')
-    expect(packed).toContain('user: hi')
+    expect(packed).toContain('"sessionId":"sess-b"')
+    expect(packed).toContain('"title":"执行会话"')
+    expect(packed).toContain('"cwd":"/work/a"')
+    expect(packed).toContain('"head":"user: hi"')
   })
 
   it('declares truncation with exact omission stats when over budget', () => {
     const packed = packSessionSnapshot(meta, [{ role: 'assistant', text: 'x'.repeat(200) }], 100)
-    expect(packed).toContain('omitted bytes=')
-    expect(packed).toContain('omitted from this snapshot')
+    expect(packed).toContain('"truncated":true')
+    expect(packed).toContain('"omittedBytes":')
+    expect(packed).toContain('"omittedMessages":')
   })
 
-  it('states explicitly that it is a read-only snapshot of another session', () => {
+  it('uses the official untrusted-snapshot preamble', () => {
     const packed = packSessionSnapshot(meta, [], 100)
-    expect(packed).toContain('read-only snapshot of another session (sess-b)')
-    expect(packed).toContain('NOT the current conversation history')
+    expect(packed).toContain('## Referenced sessions')
+    expect(packed).toContain('untrusted, read-only snapshot')
+    expect(packed).toContain('is not part of the current conversation history')
   })
 
   it('falls the title back to the session id', () => {
     const packed = packSessionSnapshot({ sessionId: 's', title: undefined, cwd: undefined }, [], 100)
-    expect(packed).toContain('title="s"')
+    expect(packed).toContain('"title":"s"')
   })
 
-  it('escapes XML-significant characters in the title', () => {
+  it('escapes source data tag-safely (official stringifyTagSafeJson semantics)', () => {
     const packed = packSessionSnapshot({ sessionId: 's', title: 'a<b&"c"', cwd: undefined }, [], 100)
-    expect(packed).toContain('title="a&lt;b&amp;&quot;c&quot;"')
+    expect(packed).toContain('\\u003c')
+    expect(packed).not.toContain('"a<b&')
   })
 })
 

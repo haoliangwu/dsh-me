@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
 import { render } from '@testing-library/react'
+import type { CommandRowOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client'
 import { BtwCommandCard } from './BtwCommandCard.tsx'
 
 const t = (key: string): string => ({ 'copy': 'Copy', 'copied': 'Copied', 'footnotes': 'Footnotes', 'running': 'btw command running…' })[key] ?? key
 
-function node(outcome: unknown) {
-  return { kind: 'command', seq: 1, time: 1, commandId: 'c1', name: 'btw', args: null, outcome }
+function node(outcome: unknown): CommandRowOwnerProps['node'] {
+  return {
+    kind: 'command', seq: 1, time: 1, commandId: 'c1', name: 'btw', args: null, outcome,
+  } as unknown as CommandRowOwnerProps['node']
 }
 
 describe('BtwCommandCard', () => {

@@ -20,6 +20,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 import { installModelSelection, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-commands'
@@ -53,9 +54,23 @@ export const SNAPSHOT_BYTE_BUDGET = 16 * 1024
 /**
  * Delegation recursion cap (borrowed from OpenCode's `subagent_depth`, default
  * 1): a `/btw` run from inside a delegated child would nest agents one level
- * too deep, so any parent that is itself a child is rejected.
+ * too deep, so any parent that is itself a child is rejected. A security /
+ * lineage invariant, not a deployment tunable — deliberately not Config.
  */
 export const MAX_DELEGATION_DEPTH = 1
+
+/** Plugin config: snapshot and parent-context budget knobs (deployment tunable). */
+export interface Config {
+  /** Head+tail byte budget for one referenced-session snapshot (default 16 KiB). */
+  snapshotBytes?: number
+  /** Parent-message carry limit for the default context path (default 10). */
+  contextMessageLimit?: number
+}
+
+export const Config = z.object({
+  snapshotBytes: z.number().step(1).min(512).default(SNAPSHOT_BYTE_BUDGET),
+  contextMessageLimit: z.number().step(1).min(1).default(CONTEXT_MESSAGE_LIMIT),
+})
 
 /** Fold a title from one title-observation result (fulfilled → snapshot title). */
 function titleOfObservation(result: SessionTitleObservationResult | undefined): string | undefined {
@@ -80,7 +95,7 @@ function buildPrompt(question: string, context: string, fromCurrentSession: bool
   return `Context from ${sourceLabel}:\n${context}\n\nQuestion: ${question}\n\nAnswer the question based on ${answerBase}, or say so when it does not answer it.`
 }
 
-export function apply(ctx: Context) {
+export function apply(ctx: Context, config: Config) {
   ctx.commands.register({
     name: 'btw',
     description: 'Answer a side question in a separate agent without touching the current conversation',
@@ -126,10 +141,13 @@ export function apply(ctx: Context) {
       if (parsed.target.kind === 'default') {
         targetId = parent.id
       } else if (parsed.target.kind === 'mention') {
-        if (!inWorkspace.some(header => header.id === parsed.target.sessionId)) {
-          return { kind: 'error', text: `目标会话不在当前 workspace：${parsed.target.sessionId}` }
+        // Pre-existing TS narrowing quirk: the `mention` union discriminant is
+        // not carried into this branch, so resolve the session id explicitly.
+        const mention = parsed.target as { readonly sessionId: string }
+        if (!inWorkspace.some(header => header.id === mention.sessionId)) {
+          return { kind: 'error', text: `目标会话不在当前 workspace：${mention.sessionId}` }
         }
-        targetId = parsed.target.sessionId
+        targetId = mention.sessionId
       } else {
         // Title channel: fold titles for the whole workspace, then resolve.
         // Title addressing is for human-visible conversations only: delegated
@@ -161,7 +179,7 @@ export function apply(ctx: Context) {
       // snapshot.
       let context: string
       if (targetId === parent.id) {
-        context = parentContextLines(parent.session.deriveMessages(), CONTEXT_MESSAGE_LIMIT)
+        context = parentContextLines(parent.session.deriveMessages(), config.contextMessageLimit ?? CONTEXT_MESSAGE_LIMIT)
       } else {
         const surface = await ctx.sessionQuery.readSurface(SessionId(targetId))
         invocation.signal.throwIfAborted()
@@ -170,7 +188,7 @@ export function apply(ctx: Context) {
         const packed = packSessionSnapshot(
           { sessionId: targetId, title: targetTitle, cwd: surface.session.cwd },
           surfaceEventMessages(surface.events),
-          SNAPSHOT_BYTE_BUDGET,
+          config.snapshotBytes ?? SNAPSHOT_BYTE_BUDGET,
         )
         context = packed
       }

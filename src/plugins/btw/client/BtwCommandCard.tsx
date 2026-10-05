@@ -5,9 +5,17 @@
 
 import { useMemo, type ReactNode } from 'react'
 import { IconApiOutline14, MarkdownText, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { CommandRowOwnerProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { CommandRowOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import css from './BtwCommandCard.module.css'
+
+// The published dsh-client-ui-primitives bundle (0.2.0-rc.2) ships
+// `IconApiOutline14` at runtime but the shipped d.ts omits it (type/runtime
+// drift — the typings carry the base `IconApiOutline` the runtime lacks).
+// Declare the real runtime export so the row can keep using it.
+declare module '@deepseek-ai/dsh-client-ui-primitives' {
+  export function IconApiOutline14(props: { readonly size?: number }): JSX.Element
+}
 
 type BtwCommandCardProps = CommandRowOwnerProps & PropsLocale<'btw'>
 
@@ -20,13 +28,15 @@ function stateOf(outcome: CommandRowOwnerProps['node']['outcome']): RowState {
 }
 
 function leadingFor(state: RowState): ReactNode {
+  // The published dsh-client-ui-primitives bundle (0.2.0-rc.2) ships the
+  // 14px icon variant, not the base IconApiOutline.
   return state === 'error' ? <StateDot state="error" /> : <IconApiOutline14 size={14} />
 }
 
 /** The one-line summary: the running label while unsettled, an outcome label
  * only when the outcome carries no text (the body renders real text), else
  * null so the row renders no summary. */
-function summaryOf(t: (key: string) => string, state: RowState, text: string | undefined): string | null {
+function summaryOf(t: PropsLocale<'btw'>['t'], state: RowState, text: string | undefined): string | null {
   if (state === 'running') return t('running')
   if (text === undefined) return state === 'error' ? t('failed') : t('done')
   return null
