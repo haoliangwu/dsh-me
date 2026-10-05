@@ -25,7 +25,7 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: pulls the ui-model-selection directory types + ctx.modelDirectories merge.
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
-import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
 import { PeakRateBadge, type ConfigSource, type PluginConfig } from './PeakRateBadge.tsx'
 import { en, zh, type PeakKey } from './locales.ts'
 
@@ -96,7 +96,10 @@ export function apply(ctx: ClientContext): void {
   // badge without a reload. Retrying stops once the holidays are non-empty
   // or the retry cap is hit. Never throws; failed RPCs are left as-is.
   const fetchConfig = async (): Promise<void> => {
-    const result = await ctx.connection.rpc.call(CHANNEL, ENDPOINT_CONFIG, {}) as RpcResult<ConfigResponse>
+    // The client ctx carries the host connection face (no `rpc.call`); the
+    // browser RPC caller is the Connection client handle.
+    const rpc = (ctx.connection as unknown as { rpc: { call(channel: string, method: string, payload: unknown): Promise<unknown> } }).rpc
+    const result = await rpc.call(CHANNEL, ENDPOINT_CONFIG, {}) as RpcResult<ConfigResponse>
     if (!result.ok) return
     publish({
       providers: result.value.providers,
@@ -124,7 +127,10 @@ export function apply(ctx: ClientContext): void {
     refresh,
   }
 
-  ctx.effect(() => { void fetchConfig() }, 'client-ui-peak-rate: fetch config')
+  ctx.effect(() => {
+    void fetchConfig()
+    return () => {}
+  }, 'client-ui-peak-rate: fetch config')
   ctx.effect(() => () => {
     if (holidayRetryTimer !== undefined) {
       clearTimeout(holidayRetryTimer)
