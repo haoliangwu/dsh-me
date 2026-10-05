@@ -35,6 +35,7 @@ import {
   titleFor,
   turnEndOutcome,
   type AudioContextLike,
+  type ChimeVariant,
   type NotifyFn,
   type PendingInteractionShape,
   type SessionEventLikeEntryShape,
@@ -147,21 +148,21 @@ export function apply(ctx: ClientContext): void {
   // permission is ever requested there.
   const desktop = isDesktopShell()
   let permission: 'unrequested' | 'requesting' | 'granted' | 'denied' = 'unrequested'
-  const notify: NotifyFn = (title, body) => {
+  const notify: NotifyFn = (title, body, variant) => {
     if (desktop) {
-      if (config.notifySound) chimeSound()
+      if (config.notifySound) chimeSound(variant)
       void scoped.connection.rpc.call(CHANNEL, ENDPOINT_NOTIFY, { title, body }).catch((error) => {
         logger.warn('dsh-ui-notification: desktop native notify failed', error)
       })
       return
     }
-    void notifyWithApi(title, body, config.notifySound, () => permission, state => { permission = state })
+    void notifyWithApi(title, body, config.notifySound, () => permission, state => { permission = state }, variant)
   }
 
   // Visibility + config-toggle gate (the tested shouldNotify) then emit.
-  const fire = (type: 'completion' | 'error', title: string, body: string): void => {
+  const fire = (type: 'completion' | 'error', title: string, body: string, variant: ChimeVariant): void => {
     const enabled = type === 'error' ? config.notifyError : config.notifyCompletion
-    if (shouldNotify(document.visibilityState, enabled)) notify(title, body)
+    if (shouldNotify(document.visibilityState, enabled)) notify(title, body, variant)
   }
 
   // ── turn/end watcher over every mirrored session ─────────────────────────
@@ -176,10 +177,10 @@ export function apply(ctx: ClientContext): void {
       if (outcome === null) continue // aborted / blocked / interrupted: skip
       const name = sessionName(sessionId)
       if (outcome.type === 'error') {
-        fire('error', titleFor('error', name), outcome.message)
+        fire('error', titleFor('error', name), outcome.message, 'error')
       } else {
         const body = bodyForTurnEnd(outcome, assistantTurnText(snapshot.entries, data.turn))
-        fire('completion', titleFor('completion', name), body)
+        fire('completion', titleFor('completion', name), body, 'default')
       }
     }
   }
@@ -228,7 +229,8 @@ export function apply(ctx: ClientContext): void {
     for (const item of fired) {
       const enabled = item.kind === 'approval' ? config.notifyApproval : config.notifyQuestion
       if (!shouldNotify(document.visibilityState, enabled)) continue
-      notify(titleFor(item.kind, sessionName(item.sessionId)), item.body)
+      const variant: ChimeVariant = item.kind === 'approval' ? 'approval' : 'default'
+      notify(titleFor(item.kind, sessionName(item.sessionId)), item.body, variant)
     }
   }
   ctx.effect(() => {
@@ -257,6 +259,7 @@ export function apply(ctx: ClientContext): void {
  * @param sound - whether to play the synthesized chime on emit.
  * @param readState - current permission state reader (test seam).
  * @param writeState - permission state writer (test seam).
+ * @param variant - the trigger-specific chime pattern.
  */
 export async function notifyWithApi(
   title: string,
@@ -264,6 +267,7 @@ export async function notifyWithApi(
   sound: boolean,
   readState: () => 'unrequested' | 'requesting' | 'granted' | 'denied',
   writeState: (next: 'unrequested' | 'requesting' | 'granted' | 'denied') => void,
+  variant: ChimeVariant,
 ): Promise<void> {
   const Api = (globalThis as { Notification?: NotificationApi }).Notification
   if (Api === undefined || typeof Api.requestPermission !== 'function') return
@@ -273,7 +277,7 @@ export async function notifyWithApi(
       globalThis.focus()
       notification.close()
     }
-    if (sound) chimeSound()
+    if (sound) chimeSound(variant)
   }
   const current = readState()
   if (current === 'granted') {
@@ -298,14 +302,14 @@ let chimeAudioContext: (AudioContextLike & { resume(): Promise<void> }) | undefi
  * Play the synthesized chime: acquire the real AudioContext once per page,
  * resume it (autoplay-policy: the user has interacted with dsh before any
  * notification fires, so this normally resolves; a failure just stays silent)
- * and schedule the two tones.
+ * and schedule the trigger-specific tone pattern.
  */
-function chimeSound(): void {
+function chimeSound(variant: ChimeVariant): void {
   const Ctor = (globalThis as { AudioContext?: new () => AudioContextLike & { resume(): Promise<void> } }).AudioContext
   if (Ctor === undefined) return
   if (chimeAudioContext === undefined) chimeAudioContext = new Ctor()
   void chimeAudioContext.resume().catch(() => {})
-  playChime(chimeAudioContext)
+  playChime(chimeAudioContext, variant)
 }
 
 /** Structural Notification API surface (denied/unsupported → silent). */

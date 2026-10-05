@@ -155,7 +155,7 @@ export function titleFor(kind: TriggerKind, sessionName: string): string {
 }
 
 /** Notification emitter injected by the apply half. */
-export type NotifyFn = (title: string, body: string) => void
+export type NotifyFn = (title: string, body: string, variant: ChimeVariant) => void
 
 /** One Session pending interaction (structural; the question domain's value carries `questions`, the approval domain's carries `toolName`/`reason`). */
 export interface PendingInteractionShape {
@@ -224,27 +224,60 @@ export interface AudioContextLike {
   }
 }
 
+/** Chime variant per notification trigger type. */
+export type ChimeVariant = 'default' | 'error' | 'approval'
+
+/** One tone of a chime pattern: frequency plus start/stop offsets in seconds. */
+export interface ChimeTone {
+  readonly frequency: number
+  readonly start: number
+  readonly stop: number
+}
+
 /**
- * Synthesize the two-tone notification chime on a Web Audio graph: sine tone A
- * (880 Hz) over `at`..`at+0.09`, tone B (1174.66 Hz, D6) over
- * `at+0.10`..`at+0.19`, each with a 10 ms attack and exponential decay to
- * silence. Pure over the context-like so the scheduling is unit-testable.
+ * Tone schedules relative to the chime start. `default` is the two-tone rise
+ * (A5 → D6) for completion and questions; `error` is a falling low pair
+ * (A4 → E4) so a finished-with-failure never sounds like success; `approval`
+ * is a rising triple (A5 → D6 → G6) that asks for a decision.
+ */
+const CHIME_PATTERNS: Record<ChimeVariant, readonly ChimeTone[]> = {
+  default: [
+    { frequency: 880, start: 0, stop: 0.09 },
+    { frequency: 1174.66, start: 0.1, stop: 0.19 },
+  ],
+  error: [
+    { frequency: 440, start: 0, stop: 0.09 },
+    { frequency: 329.63, start: 0.1, stop: 0.19 },
+  ],
+  approval: [
+    { frequency: 880, start: 0, stop: 0.06 },
+    { frequency: 1174.66, start: 0.08, stop: 0.14 },
+    { frequency: 1567.98, start: 0.16, stop: 0.22 },
+  ],
+}
+
+/**
+ * Synthesize one trigger-specific chime pattern on a Web Audio graph: one or
+ * more sine tones per {@link CHIME_PATTERNS}, each with a 10 ms attack and
+ * exponential decay to silence. Pure over the context-like so the scheduling
+ * is unit-testable.
  * @param ac - the (real or fake) audio context.
+ * @param variant - the trigger-specific tone pattern (default: `default`).
  * @param at - the chime's start in context seconds (defaults to now).
  */
-export function playChime(ac: AudioContextLike, at = ac.currentTime): void {
-  const tone = (frequency: number, start: number, end: number): void => {
+export function playChime(ac: AudioContextLike, variant: ChimeVariant = 'default', at = ac.currentTime): void {
+  for (const tone of CHIME_PATTERNS[variant]) {
     const oscillator = ac.createOscillator()
-    oscillator.frequency.value = frequency
+    oscillator.frequency.value = tone.frequency
     const gain = ac.createGain()
     gain.connect(ac.destination)
     oscillator.connect(gain)
+    const start = at + tone.start
+    const stop = at + tone.stop
     gain.gain.setValueAtTime(0.0001, start)
     gain.gain.exponentialRampToValueAtTime(0.18, start + 0.01)
-    gain.gain.exponentialRampToValueAtTime(0.0001, end)
+    gain.gain.exponentialRampToValueAtTime(0.0001, stop)
     oscillator.start(start)
-    oscillator.stop(end)
+    oscillator.stop(stop)
   }
-  tone(880, at, at + 0.09)
-  tone(1174.66, at + 0.1, at + 0.19)
 }

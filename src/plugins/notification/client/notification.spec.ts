@@ -253,16 +253,45 @@ describe('playChime', () => {
     expect(tones.map(t => t.stoppedAt)).toEqual([10.09, 10.19])
   })
 
+  it('plays a falling low pair for errors', () => {
+    const { ac, tones } = fakeAudioContext()
+    playChime(ac, 'error')
+    expect(tones.map(t => t.frequency)).toEqual([440, 329.63])
+    expect(tones.map(t => t.startedAt)).toEqual([10, 10.1])
+    expect(tones.map(t => t.stoppedAt)).toEqual([10.09, 10.19])
+  })
+
+  it('plays a rising triple for approvals', () => {
+    const { ac, tones } = fakeAudioContext()
+    playChime(ac, 'approval')
+    expect(tones).toHaveLength(3)
+    expect(tones.map(t => t.frequency)).toEqual([880, 1174.66, 1567.98])
+    expect(tones.map(t => t.startedAt)).toEqual([10, 10.08, 10.16])
+    expect(tones.map(t => t.stoppedAt)).toEqual([10.06, 10.14, 10.22])
+  })
+
+  it('gives error and approval distinct schedules from default', () => {
+    const { ac, tones } = fakeAudioContext()
+    playChime(ac, 'default')
+    const defaultTones = tones.map(t => `${t.frequency}:${t.startedAt}`).join(',')
+    const error = fakeAudioContext()
+    playChime(error.ac, 'error')
+    const approval = fakeAudioContext()
+    playChime(approval.ac, 'approval')
+    expect(error.tones.map(t => t.frequency).join(',')).not.toBe(defaultTones)
+    expect(approval.tones.map(t => `${t.frequency}:${t.startedAt}`).join(',')).not.toBe(defaultTones)
+  })
+
   it('honours an explicit start offset', () => {
     const { ac, tones } = fakeAudioContext()
-    playChime(ac, 5)
+    playChime(ac, 'default', 5)
     expect(tones.map(t => t.startedAt)).toEqual([5, 5.1])
     expect(tones.map(t => t.stoppedAt)).toEqual([5.09, 5.19])
   })
 
   it('schedules gain attack and exponential decay per tone', () => {
     const { ac, tones } = fakeAudioContext()
-    playChime(ac, 10)
+    playChime(ac, 'default', 10)
     expect(tones[0]?.envelope).toEqual([
       { op: 'set', v: 0.0001, t: 10 },
       { op: 'ramp', v: 0.18, t: 10.01 },
@@ -277,12 +306,12 @@ describe('playChime', () => {
 
   it('wires each oscillator through its gain into the destination', () => {
     const { ac, tones } = fakeAudioContext()
-    playChime(ac)
+    playChime(ac, 'default')
     for (const tone of tones) {
       expect(tone.oscConnectedTo).not.toBeNull()
       expect(tone.gainConnectedTo).toBe(ac.destination)
     }
-    // The two oscillators route through two distinct gain nodes, not one shared chain.
+    // Each oscillator routes through its own gain node, not one shared chain.
     expect(tones[0]?.oscConnectedTo).not.toBe(tones[1]?.oscConnectedTo)
   })
 })
