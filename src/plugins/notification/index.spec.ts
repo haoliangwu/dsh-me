@@ -9,6 +9,7 @@ describe('Config schema', () => {
       notifyQuestion: true,
       notifyApproval: true,
       notifySound: true,
+      notifyBundleId: 'com.deepseek.dsh',
     })
   })
 
@@ -19,18 +20,21 @@ describe('Config schema', () => {
       notifyQuestion: true,
       notifyApproval: true,
       notifySound: true,
+      notifyBundleId: 'com.deepseek.dsh',
     })
   })
 
   it('accepts a full config', () => {
     expect(Config({
       notifyCompletion: false, notifyError: false, notifyQuestion: false, notifyApproval: false, notifySound: false,
+      notifyBundleId: 'com.other.app',
     })).toEqual({
       notifyCompletion: false,
       notifyError: false,
       notifyQuestion: false,
       notifyApproval: false,
       notifySound: false,
+      notifyBundleId: 'com.other.app',
     })
   })
 

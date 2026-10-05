@@ -40,6 +40,12 @@ export interface Config {
   notifyApproval?: boolean
   /** Play the synthesized chime instead of the OS default sound (default: true). */
   notifySound?: boolean
+  /**
+   * macOS app bundle id that desktop notifications act on when clicked.
+   * Used with terminal-notifier `-activate`; the osascript fallback has no
+   * click action (default: 'com.deepseek.dsh').
+   */
+  notifyBundleId?: string
 }
 
 export const Config = z.object({
@@ -48,6 +54,7 @@ export const Config = z.object({
   notifyQuestion: z.boolean().default(true),
   notifyApproval: z.boolean().default(true),
   notifySound: z.boolean().default(true),
+  notifyBundleId: z.string().default('com.deepseek.dsh'),
 })
 
 /** Response payload for the `config` endpoint. */
@@ -126,14 +133,17 @@ interface NotifyPayload {
 }
 
 /**
- * Validate and forward one `notify` payload. macOS shows it with `osascript
- * display notification`; every other platform logs and no-ops (browser
- * profiles already notify through the renderer API).
+ * Validate and forward one `notify` payload. macOS shows it with
+ * `terminal-notifier` when installed (its `-activate` makes a click focus
+ * the dsh app) and falls back to `osascript display notification` otherwise
+ * (no click action; clicking opens Script Editor). Every other platform logs
+ * and no-ops (browser profiles already notify through the renderer API).
  * @param payload - the client-sent payload.
  * @param ctx - the host plugin context for logging.
+ * @param bundleId - the macOS app bundle id notifications act on when clicked.
  * @returns whether the OS notification was dispatched.
  */
-function dispatchNativeNotify(payload: unknown, ctx: Context): Promise<RpcResult<{ readonly delivered: boolean }>> {
+function dispatchNativeNotify(payload: unknown, ctx: Context, bundleId: string): Promise<RpcResult<{ readonly delivered: boolean }>> {
   if (typeof payload !== 'object' || payload === null) {
     return Promise.resolve({ ok: false as const, error: { code: 'bad-request', message: 'notify payload must be an object', details: {} } })
   }
@@ -148,10 +158,23 @@ function dispatchNativeNotify(payload: unknown, ctx: Context): Promise<RpcResult
     return Promise.resolve({ ok: false as const, error: { code: 'unsupported', message: 'native notification unavailable on this platform', details: {} } })
   }
   return new Promise((resolve) => {
-    execFile('osascript', ['-e', buildOsascriptScript(title, body)], (error, _stdout, stderr) => {
+    // terminal-notifier: click activates the bundle. ENOENT falls back to
+    // osascript (click then opens Script Editor — a documented limitation).
+    execFile('terminal-notifier', ['-title', title, '-message', body, '-activate', bundleId, '-sender', bundleId], (error) => {
+      if (error && (error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        ctx.logger.warn('dsh-ui-notification: terminal-notifier failed', error)
+        resolve({ ok: false as const, error: { code: 'internal', message: 'terminal-notifier failed to show the notification', details: {} } })
+        return
+      }
       if (error) {
-        ctx.logger.warn('dsh-ui-notification: osascript failed', error, stderr)
-        resolve({ ok: false as const, error: { code: 'internal', message: 'osascript failed to show the notification', details: {} } })
+        execFile('osascript', ['-e', buildOsascriptScript(title, body)], (osError, _stdout, stderr) => {
+          if (osError) {
+            ctx.logger.warn('dsh-ui-notification: osascript failed', osError, stderr)
+            resolve({ ok: false as const, error: { code: 'internal', message: 'osascript failed to show the notification', details: {} } })
+            return
+          }
+          resolve({ ok: true as const, value: { delivered: true } })
+        })
         return
       }
       resolve({ ok: true as const, value: { delivered: true } })
@@ -187,7 +210,7 @@ export function apply(ctx: Context, config: Config): void {
             return Promise.resolve({ ok: true as const, value: response })
           }
           if (endpoint === ENDPOINT_NOTIFY) {
-            return dispatchNativeNotify(payload, webCtx)
+            return dispatchNativeNotify(payload, webCtx, config.notifyBundleId as string)
           }
           return Promise.resolve({
             ok: false as const,

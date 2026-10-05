@@ -49,10 +49,10 @@ bash：需要写入 /tmp/x              ← 正文 = 申请工具 + 审批原因
 - 完成/错误：遍历镜像会话，watch `session.eventSource` 的 `append` 扫描 `turn/end`，按 reason 映射结果。
 - 提问/审批：读 `uiSession.sessionStatus` 的 pending-interaction 面——平台 answerer 先注册并 claim `user-questions/request` 与 `approval/request` waterfall，后注册的观察者收不到，所以从这里取（`PendingQuestion` kind `question` / `PendingApproval` kind `approval`）。已有 pending 的条目启动时不补弹，未知域静默。
 - 声音：`silent: true` 压掉系统音，改播 Web Audio 合成音型；懒加载 `AudioContext`，`resume()` 兼容 autoplay 策略，失败静默。
-- 桌面通道：`dsh-*://` 协议（Electron 壳）下每条通知经 RPC `/notification` 端点 `notify` 交给 host，host 用 `osascript display notification` 弹原生横幅，并把标题/正文按 UTF-8 字节截到 64/168（合计 ≤232，留余量给 macOS 256 字节上限——按字符数截在 CJK 下会直接超限）；提示音仍在渲染进程播放。
+- 桌面通道：`dsh-*://` 协议（Electron 壳）下每条通知经 RPC `/notification` 端点 `notify` 交给 host：装了 `terminal-notifier` 时用它（`-activate <bundleId>`，点击横幅聚焦 DeepSeek Harness，身份也显示为 dsh），没装则回退 `osascript display notification`（点击会开 Script Editor——已知限制）。标题/正文按 UTF-8 字节截到 64/168（合计 ≤232，留余量给 macOS 256 字节上限——按字符数截在 CJK 下会直接超限）；提示音仍在渲染进程播放。
 
 ## 已知限制
 
-- 原生横幅仅在 macOS 生效（osascript）；其他平台的桌面壳静默降级为只剩提示音。
+- 原生横幅仅在 macOS 生效（osascript 回退路径）；其他平台的桌面壳静默降级为只剩提示音。
+- 点击聚焦需要 `terminal-notifier`：`brew install terminal-notifier`；点击行为由 `notifyBundleId` 配置（默认 `com.deepseek.dsh`）。
 - 审批正文用的是工具侧原始 `reason`，未做本地化。
-- 通知身份显示为 `osascript`（macOS 通知中心归属），介意可换 `terminal-notifier` 或等官方通道。
