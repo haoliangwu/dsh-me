@@ -256,20 +256,27 @@ function downstreamMessages(decision: PreStepDecisionLike): readonly UserMessage
 }
 
 describe('plugin contract', () => {
-  it('declares the id, the tools injection (webServer optional), and the dual-pool config', () => {
+  it('declares the id, the tools injection (webServer child), and the dual-pool config', () => {
     expect(name).toBe('dsh-memory')
-    // webServer moved behind ctx.get (optional): non-web profiles must not
-    // wait on a web-plane service; the Memory tab channel mounts only when
-    // the webServer service is present.
+    // webServer + commands mount through inject children: non-web profiles
+    // must not wait on a web-plane service; the Memory tab channel and the
+    // /memory-tidy command register only when their services appear.
     expect(inject).toEqual(['tools'])
-    expect(Config({})).toEqual({ maxEntryChars: 2500, maxCompactionSummaries: 2, maxManualChars: 10000 })
+    expect(Config({})).toEqual({
+      maxEntryChars: 2500,
+      maxCompactionSummaries: 2,
+      maxCompactionChars: 20000,
+      maxManualChars: 10000,
+    })
     expect(Config({ maxEntryChars: 9000 })).toEqual({
       maxEntryChars: 9000,
       maxCompactionSummaries: 2,
+      maxCompactionChars: 20000,
       maxManualChars: 10000,
     })
     expect(() => Config({ maxEntryChars: 0 })).toThrow()
     expect(() => Config({ maxCompactionSummaries: -1 })).toThrow()
+    expect(() => Config({ maxCompactionChars: 0 })).toThrow()
     expect(() => Config({ maxManualChars: -1 })).toThrow()
   })
 })
@@ -812,6 +819,79 @@ describe('memory-tidy command', () => {
     expect(result).toMatchObject({ kind: 'error' })
     expect((result as { text?: string }).text).toContain('没有 workspace')
     expect(steer).not.toHaveBeenCalled()
+  })
+})
+
+describe('memory_list full content + memory_forget fences (council fixes)', () => {
+  beforeEach(() => {
+    process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-memory-test-'))
+  })
+  afterEach(() => {
+    if (process.env.DSH_HOME !== undefined) rmSync(process.env.DSH_HOME, { recursive: true, force: true })
+    delete process.env.DSH_HOME
+  })
+
+  it('memory_list full=true returns the complete content; the default stays a 240-char preview', async () => {
+    const mounted = mount()
+    const session = fakeSession()
+    const long = `# fact ${'x'.repeat(500)}`
+    await mounted.executes('memory_write', { content: long }, { agent: { id: 's1', session } })
+    const preview = await mounted.executes('memory_list', {}, { agent: { id: 's1', session } })
+    const first = (preview as { memories: Array<{ content: string }> }).memories[0]
+    expect(first?.content).toContain('...')
+    expect(first?.content.length).toBeLessThan(long.length)
+    const full = await mounted.executes('memory_list', { full: true }, { agent: { id: 's1', session } })
+    const fullContent = (full as { memories: Array<{ content: string }> }).memories[0]?.content
+    expect(fullContent).toBe(long)
+  })
+
+  it('memory_forget refuses a row outside the calling workspace (guessed id cannot touch another pool)', async () => {
+    const mounted = mount()
+    const session = fakeSession('/work/a', 's1')
+    const other = fakeSession('/work/b', 's2')
+    const written = await mounted.executes('memory_write', { content: 'their pool fact' }, { agent: { id: 's2', session: other } })
+    const id = (written as { id: number }).id
+    // The caller of workspace A cannot delete workspace B's row.
+    const refused = await mounted.executes('memory_forget', { id }, { agent: { id: 's1', session } })
+    expect(refused).toEqual({ deleted: false })
+    const stillThere = await mounted.executes('memory_list', {}, { agent: { id: 's2', session: other } })
+    expect((stillThere as { memories: Array<{ content: string }> }).memories[0]?.content).toBe('their pool fact')
+  })
+
+  it('memory_forget on one checkpoint segment removes the whole group from the next injection', async () => {
+    const mounted = mount()
+    const session = fakeSession()
+    const sibling = fakeSession('/work/a', 's2')
+    const bullets = Array.from({ length: 12 }, () => `- ${'y'.repeat(298)}`)
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1], `## Files and Code\n${bullets.join('\n')}`))
+    const listed = await mounted.executes('memory_list', {}, { agent: { id: 's1', session } })
+    const compactionRows = (listed as { memories: Array<{ id: number; kind: string }> }).memories
+      .filter(entry => entry.kind === 'compaction')
+    expect(compactionRows.length).toBeGreaterThan(1) // the oversized section split into several segments
+    // Delete ONE segment id: the whole checkpoint group must vanish.
+    const deleted = await mounted.executes('memory_forget', { id: compactionRows[0]?.id }, { agent: { id: 's1', session } })
+    expect(deleted).toEqual({ deleted: true })
+    const after = await mounted.executes('memory_list', {}, { agent: { id: 's1', session } })
+    const remaining = (after as { memories: Array<{ kind: string }> }).memories.filter(entry => entry.kind === 'compaction')
+    expect(remaining).toEqual([])
+    const decision = await mounted.prestep(session)
+    const text = (injectedMemoryMessage(decision)?.content[0] as { text: string } | undefined)?.text ?? ''
+    expect(text).not.toContain('y'.repeat(100))
+  })
+
+  it('bounds the compaction pool by chars in the live flow: the oversized older group is dropped whole with the annotation', async () => {
+    const mounted = mount({ maxCompactionChars: 1000 })
+    const session = fakeSession()
+    const sibling = fakeSession('/work/a', 's2')
+    // Older harvest first, then a small newer checkpoint.
+    const bullets = Array.from({ length: 10 }, () => `- ${'z'.repeat(298)}`)
+    await mounted.fire('session/event', sibling, checkpointEvent(10, [1], `## Files and Code\n${bullets.join('\n')}`))
+    await mounted.fire('session/event', sibling, checkpointEvent(20, [11], '## Primary Request and Intent\n- small goal'))
+    const decision = await mounted.prestep(session)
+    const text = (injectedMemoryMessage(decision)?.content[0] as { text: string }).text
+    expect(text).toContain('- small goal')
+    expect(text).not.toContain('zzz')
+    expect(text).toContain('(1 older memories omitted)')
   })
 })
 

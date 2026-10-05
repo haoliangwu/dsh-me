@@ -57,7 +57,7 @@ function segment(id: number, seq: number, content: string, segmentIndex: number,
 }
 
 /** The default dual-pool budget for render tests (large enough to never trim). */
-const ROOMY_BUDGET: MemoryBudgetOptions = { maxEntryChars: 2500, maxCompactionSummaries: 10, maxManualChars: 10000 }
+const ROOMY_BUDGET: MemoryBudgetOptions = { maxEntryChars: 2500, maxCompactionSummaries: 10, maxCompactionChars: 40000, maxManualChars: 10000 }
 
 /** The wild polluted-segment shape: a whole prior memory block verbatim inside one ``` fence. */
 const FENCED_ECHO = [
@@ -355,6 +355,39 @@ describe('assembleMemoryBlock (dual-pool injection)', () => {
     expect(output).toContain('(1 older memories omitted)')
   })
 
+  it('bounds the compaction pool by total chars too: a group that overflows the char budget drops whole (count cap alone is not enough)', () => {
+    // One giant checkpoint (many segments, ~12k chars total) and one small
+    // newer checkpoint: the count cap admits both, but the char budget must
+    // stop at the small one — the giant group is never beheaded.
+    const fatOld = Array.from({ length: 6 }, (_, i) =>
+      segment(100 + i, 10, `## Files and Code (cont. ${i + 1}/6)\n${'- x'.repeat(2000)}`, i, 200, 'Files and Code'))
+    const smallNew = [segment(7, 20, '## Primary Request and Intent\n- small goal', 0, 300, 'Primary Request and Intent')]
+    const output = block([...fatOld, ...smallNew], { ...ROOMY_BUDGET, maxCompactionChars: 1000 })
+    expect(output).toContain('- small goal')
+    expect(output).not.toContain('## Files and Code (cont.')
+    expect(output).toContain('(1 older memories omitted)')
+  })
+
+  it('strips a nested memory-block echo out of a manual note too (same strip as checkpoints)', () => {
+    const echoed = [
+      'task summary',
+      '```',
+      '## Project Memory',
+      'Knowledge from previous sessions. May be stale; correct via memory_write.',
+      '<project-memory>',
+      '<note id="1" scope="global">old fact</note>',
+      '</project-memory>',
+      '```',
+    ].join('\n')
+    const note = row({ id: 42, kind: 'manual', content: echoed, created_at: 500 })
+    const output = block([note], ROOMY_BUDGET)
+    expect(output).toContain('<note id="42"')
+    expect(output).toContain('task summary')
+    expect(output).not.toContain('old fact')
+    expect(output.match(/<project-memory>/g) ?? []).toHaveLength(1) // only the block's own wrapper
+    expect(output.match(/## Project Memory/g) ?? []).toHaveLength(1) // only the block's own header
+  })
+
   it('bounds the manual pool by total chars: entries dropped from the oldest end never evict checkpoints', () => {
     const notes = Array.from({ length: 6 }, (_, i) =>
       row({ id: 100 + i, kind: 'manual', content: 'y'.repeat(1500), created_at: i }))
@@ -412,7 +445,7 @@ describe('assembleMemoryBlock (dual-pool injection)', () => {
   it('sums dropped groups and entries into one omitted annotation', () => {
     const notes = Array.from({ length: 3 }, (_, i) =>
       row({ id: 100 + i, kind: 'manual', content: 'z'.repeat(4000), created_at: i }))
-    const output = block([...notes, ...oldGroup, ...newGroup], { maxEntryChars: 2500, maxCompactionSummaries: 1, maxManualChars: 6000 })
+    const output = block([...notes, ...oldGroup, ...newGroup], { maxEntryChars: 2500, maxCompactionSummaries: 1, maxCompactionChars: 40000, maxManualChars: 6000 })
     // 2 manual dropped (the newest 4000-char note fits alone; the next would
     // overflow the 6000 budget, admission stops) + 1 group dropped → 3.
     expect(output).toContain('(3 older memories omitted)')

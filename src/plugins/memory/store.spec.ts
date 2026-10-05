@@ -223,10 +223,58 @@ CREATE UNIQUE INDEX idx_unique_seq ON memories(workspace, source_event_seq);
     expect(sibling.join('\n')).toContain('- a.ts')
   })
 
-  it('deleteById removes exactly one row', () => {
+  it('deleteMemory removes exactly the visible row (scoped delete)', () => {
     const id = store.insertManual('workspace', { content: 'fact', workspace: WORKSPACE_A })
-    expect(store.deleteById(id)).toBe(1)
+    expect(store.deleteMemory(id, { workspace: WORKSPACE_A, sessionId: 's1' })).toBe(1)
     expect(store.listActive(WORKSPACE_A, 's1')).toEqual([])
-    expect(store.deleteById(id)).toBe(0)
+    expect(store.deleteMemory(id, { workspace: WORKSPACE_A, sessionId: 's1' })).toBe(0)
+  })
+
+  it('deleteMemory refuses a row outside the caller\'s scope (guessed id cannot touch another pool)', () => {
+    const id = store.insertManual('workspace', { content: 'other pool', workspace: WORKSPACE_B })
+    expect(store.deleteMemory(id, { workspace: WORKSPACE_A, sessionId: 's1' })).toBe(0)
+    expect(store.listActive(WORKSPACE_B, 's1').map(r => r.content)).toEqual(['other pool'])
+  })
+
+  it('deleteMemory on one checkpoint segment removes the whole group', () => {
+    const event = store.insertCompaction(checkpoint(WORKSPACE_A, 10, 1000, TWO_SEGMENTS))
+    expect(event).not.toBeNull()
+    const segments = store.listActive(WORKSPACE_A, 's1')
+    expect(segments).toHaveLength(2)
+    // Delete a single segment id: the group (both segments) goes together.
+    expect(store.deleteMemory(segments[0]?.id as number, { workspace: WORKSPACE_A, sessionId: 's1' })).toBe(2)
+    expect(store.listActive(WORKSPACE_A, 's1')).toEqual([])
+  })
+
+  it('deleteMemory expands by the target group\'s own workspace, never the caller\'s (foreign-id safety)', () => {
+    const foreign = store.insertCompaction(checkpoint(WORKSPACE_B, 20, 2000, TWO_SEGMENTS))
+    expect(foreign).not.toBeNull()
+    const foreignSegments = store.listActive(WORKSPACE_B, 'sX')
+    // A caller of a different workspace cannot even resolve the row (visibility
+    // fence fires first), so B's group stays intact.
+    expect(store.deleteMemory(foreignSegments[0]?.id as number, { workspace: WORKSPACE_A, sessionId: 's1' })).toBe(0)
+    expect(store.listActive(WORKSPACE_B, 'sX')).toHaveLength(2)
+  })
+
+  it('listActive keyword matches literally (LIKE wildcards escaped)', () => {
+    store.insertManual('workspace', { content: 'progress 100% done', workspace: WORKSPACE_A })
+    store.insertManual('workspace', { content: 'under_score case', workspace: WORKSPACE_A })
+    store.insertManual('workspace', { content: 'plain case', workspace: WORKSPACE_A })
+    const byPercent = store.listActive(WORKSPACE_A, 's1', '100%').map(r => r.content)
+    expect(byPercent).toEqual(['progress 100% done'])
+    // An unescaped '_' matches any single character (and therefore every
+    // non-empty row); escaped, it only matches rows with a literal underscore.
+    const byUnderscore = store.listActive(WORKSPACE_A, 's1', '_').map(r => r.content)
+    expect(byUnderscore).toEqual(['under_score case'])
+    const literal = store.listActive(WORKSPACE_A, 's1', 'under_score').map(r => r.content)
+    expect(literal).toEqual(['under_score case'])
+    // A keyword containing an escape character matches itself.
+    const backslash = store.insertManual('workspace', { content: 'path C:\\tmp', workspace: WORKSPACE_A })
+    expect(backslash).toBeGreaterThan(0)
+    expect(store.listActive(WORKSPACE_A, 's1', 'C:\\tmp').map(r => r.content)).toEqual(['path C:\\tmp'])
+  })
+
+  it('sets a non-zero busy timeout for multi-host writer contention', () => {
+    expect((db.prepare('PRAGMA busy_timeout').get() as { timeout: number }).timeout).toBe(5000)
   })
 })

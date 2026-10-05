@@ -83,6 +83,11 @@ export class MemoryStore {
 
   constructor(db: DatabaseSync) {
     this.db = db
+    // Two host processes (e.g. desktop + web profiles) can open the same
+    // memory.db concurrently; node:sqlite's default busy timeout of 0 turns a
+    // transient writer contention into SQLITE_BUSY. A 5s wait lets the other
+    // host's write commit instead of failing the harvest/tool mid-flight.
+    this.db.exec('PRAGMA busy_timeout = 5000')
     this.db.exec(DDL)
     migrate(db)
   }
@@ -173,17 +178,60 @@ WHERE superseded_by IS NULL AND (
 )`
     const params: Array<string | null> = [workspace, workspace, sessionId]
     if (keyword !== undefined && keyword !== '') {
-      sql += ' AND content LIKE ?'
-      params.push(`%${keyword}%`)
+      sql += " AND content LIKE ? ESCAPE '\\'"
+      params.push(`%${escapeLikePattern(keyword)}%`)
     }
     sql += ' ORDER BY created_at DESC, id DESC'
     return this.db.prepare(sql).all(...params) as unknown as StoredMemoryRow[]
   }
 
-  /** Delete one memory by id (memory_forget). @returns rows deleted. */
-  deleteById(id: number): number {
-    const result = this.db.prepare('DELETE FROM memories WHERE id = ?').run(id)
-    return Number(result.changes)
+  /**
+   * Delete one memory row visible to the caller, group-aware and scoped
+   * (memory_forget). The visibility fence is identical to listActive: a
+   * guessed id can never touch another pool (a foreign workspace's rows, or a
+   * session note of an invisible session). A compaction row deletes its WHOLE
+   * checkpoint group (every segment sharing workspace + source_event_seq —
+   * deleting a single segment would leave a beheaded checkpoint in the
+   * injected block; superseded rows of the same group go with it). Once
+   * deleted, a replayed harvest of the same event re-inserts the group (the
+   * idempotency keys are gone) — the tool description documents this.
+   * @param id - the row id to delete.
+   * @param scope - the caller's workspace key and session id (visibility fence).
+   * @returns rows deleted (the whole group when the target was a checkpoint segment).
+   */
+  deleteMemory(id: number, scope: { workspace: string | null; sessionId: string | null }): number {
+    const visible = `
+AND superseded_by IS NULL AND (
+  workspace IS NULL
+  OR (kind = 'compaction' AND workspace = ?)
+  OR (kind = 'manual' AND session_id IS NULL AND workspace = ?)
+  OR (kind = 'manual' AND session_id = ?)
+)`
+    const target = this.db.prepare(
+      `SELECT workspace AS w, kind AS k, source_event_seq AS seq FROM memories WHERE id = ?${visible}`,
+    ).get(id, scope.workspace, scope.workspace, scope.sessionId) as
+      { w: string | null; k: string; seq: number | null } | undefined
+    if (target === undefined) return 0
+    // One transaction wraps the group expansion: a checkpoint's segments
+    // always delete together, never half a group.
+    this.db.exec('BEGIN')
+    try {
+      let changes = 0
+      if (target.k === 'compaction' && target.seq !== null) {
+        const result = this.db.prepare(
+          "DELETE FROM memories WHERE kind = 'compaction' AND workspace = ? AND source_event_seq = ?",
+        ).run(target.w, target.seq)
+        changes += Number(result.changes)
+      } else {
+        const result = this.db.prepare('DELETE FROM memories WHERE id = ?').run(id)
+        changes += Number(result.changes)
+      }
+      this.db.exec('COMMIT')
+      return changes
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
   }
 
   /** Drop one session's session-scoped notes (session/disposed cleanup); workspace checkpoints survive. @returns rows deleted. */
@@ -191,4 +239,9 @@ WHERE superseded_by IS NULL AND (
     const result = this.db.prepare('DELETE FROM memories WHERE session_id = ? AND kind = \'manual\'').run(sessionId)
     return Number(result.changes)
   }
+}
+
+/** Escape LIKE wildcards (% / _) and the escape character itself, so a keyword matches literally (memory_list). */
+function escapeLikePattern(keyword: string): string {
+  return keyword.replace(/[\\%_]/g, match => `\\${match}`)
 }

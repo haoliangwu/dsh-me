@@ -65,12 +65,14 @@ export const name = MEMORY_PLUGIN
  */
 export const inject = ['tools']
 
-/** Plugin config: the three dual-pool/envelope knobs (spec — the old char budget is retired). */
+/** Plugin config: the dual-pool/envelope knobs (spec — the old char budget is retired). */
 export interface Config {
   /** Entry cap: harvest segment split threshold + memory_write truncation threshold (default: 2500). */
   maxEntryChars?: number
   /** Compaction pool size: whole checkpoint groups, newest first (default: 2). */
   maxCompactionSummaries?: number
+  /** Compaction pool char budget: total content length (chars) of admitted checkpoint groups, newest first (default: 20000). */
+  maxCompactionChars?: number
   /** Manual pool budget: total content length (chars) of admitted entries, newest first (default: 10000). */
   maxManualChars?: number
 }
@@ -78,11 +80,13 @@ export interface Config {
 /** Defaults when the config omits each knob. */
 export const DEFAULT_MAX_ENTRY_CHARS = 2500
 export const DEFAULT_MAX_COMPACTION_SUMMARIES = 2
+export const DEFAULT_MAX_COMPACTION_CHARS = 20000
 export const DEFAULT_MAX_MANUAL_CHARS = 10000
 
 export const Config = z.object({
   maxEntryChars: z.number().step(1).min(1).default(DEFAULT_MAX_ENTRY_CHARS),
   maxCompactionSummaries: z.number().step(1).min(0).default(DEFAULT_MAX_COMPACTION_SUMMARIES),
+  maxCompactionChars: z.number().step(1).min(1).default(DEFAULT_MAX_COMPACTION_CHARS),
   maxManualChars: z.number().step(1).min(0).default(DEFAULT_MAX_MANUAL_CHARS),
 })
 
@@ -392,6 +396,7 @@ export function apply(ctx: Context, config: Config): void {
   const budget: MemoryBudgetOptions = {
     maxEntryChars: config.maxEntryChars ?? DEFAULT_MAX_ENTRY_CHARS,
     maxCompactionSummaries: config.maxCompactionSummaries ?? DEFAULT_MAX_COMPACTION_SUMMARIES,
+    maxCompactionChars: config.maxCompactionChars ?? DEFAULT_MAX_COMPACTION_CHARS,
     maxManualChars: config.maxManualChars ?? DEFAULT_MAX_MANUAL_CHARS,
   }
 

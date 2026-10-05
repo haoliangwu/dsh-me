@@ -353,6 +353,8 @@ export interface MemoryBudgetOptions {
   readonly maxEntryChars: number
   /** Compaction pool size: whole checkpoint groups, newest first (default 2). */
   readonly maxCompactionSummaries: number
+  /** Compaction pool char budget: total content length (chars) of admitted checkpoint groups, newest first (default 20000). */
+  readonly maxCompactionChars: number
   /** Manual pool budget: total content length (chars) of admitted entries, newest first (default 10000). */
   readonly maxManualChars: number
 }
@@ -364,7 +366,7 @@ function dateOf(createdAt: number): string {
 
 /** Render one manual row as a `<note>` element (spec format). */
 function renderNote(row: MemoryBlockRow): string {
-  return `<note id="${row.id}" scope="${scopeOfRow(row)}">${row.content}</note>`
+  return `<note id="${row.id}" scope="${scopeOfRow(row)}">${stripNestedMemoryEcho(row.content)}</note>`
 }
 
 /** The fixed injected-block header contract lines, recognized wherever they reappear inside stored segment text (the nested-echo feedback loop). */
@@ -582,7 +584,15 @@ export function assembleMemoryBlock(
     if (rankA !== rankB) return rankA - rankB
     return b.created_at - a.created_at
   })
-  // Compaction pool: whole groups keyed by source_event_seq, newest group first.
+  // Compaction pool: whole groups keyed by source_event_seq, newest group
+  // first. Two caps apply as whole-group admission, newest→old, and the
+  // first group failing EITHER cap stops the pass (no skip-and-continue):
+  // maxCompactionSummaries (group count) and maxCompactionChars (cumulative
+  // content chars across the kept groups — a group's segment count is
+  // unbounded above the per-entry cap, so without a char budget two giant
+  // checkpoints could inject tens of thousands of chars). Whole-group
+  // never-beheaded semantics stay intact; the dropped count below annotates
+  // groups dropped by either cap.
   const groups = new Map<number, MemoryBlockRow[]>()
   for (const row of eligible) {
     if (row.kind !== 'compaction' || row.source_event_seq === null) continue
@@ -593,7 +603,15 @@ export function assembleMemoryBlock(
   const orderedGroups = [...groups.entries()]
     .map(([seq, segments]) => ({ seq, segments, createdAt: Math.max(...segments.map(segment => segment.created_at)) }))
     .sort((a, b) => b.createdAt - a.createdAt)
-  const keptGroups = orderedGroups.slice(0, Math.max(0, options.maxCompactionSummaries))
+  const keptGroups: Array<{ seq: number; segments: MemoryBlockRow[]; createdAt: number }> = []
+  let compactionChars = 0
+  for (const group of orderedGroups) {
+    if (keptGroups.length >= options.maxCompactionSummaries) break
+    const size = group.segments.reduce((chars, segment) => chars + segment.content.length, 0)
+    if (compactionChars + size > options.maxCompactionChars) break
+    keptGroups.push(group)
+    compactionChars += size
+  }
   const dropped = (allManual.length - keptManual.length) + (orderedGroups.length - keptGroups.length)
   const pieces: string[] = [
     ...keptManual.map(renderNote),
@@ -717,7 +735,7 @@ export function buildTidyPrompt(extra: string): string {
     '背景：记忆由 memory_list / memory_write / memory_forget 三个工具管理，当前可见的记忆已注入在本会话上下文（见上方注入的记忆块）。',
     '',
     '执行步骤：',
-    '1. 调用 memory_list 列出当前可见的全部记忆（每条含 id、scope、kind、created）。',
+    '1. 调用 memory_list（参数 full=true）列出当前可见的全部记忆（每条含 id、scope、kind、created 与完整内容，合并/改写需要全量而非预览）。',
     '2. 合并重复记忆：描述同一事实的多条记录，保留最新、最完整的一条（必要时先用 memory_write 写入合并后的完整版本），其余用 memory_forget 删除。',
     '3. 删除过期记忆：已被新事实取代、明确不再成立或纯一次性信息的记忆，用 memory_forget 删除。',
     '4. 解决冲突记忆：同一事实存在相互矛盾版本时，以 created 较新的事实为基准——保留（必要时改写为）较新的正确版本，并删除或改写较旧版本；两个版本各自成立（并不矛盾）时都保留。',

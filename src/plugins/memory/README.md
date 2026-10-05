@@ -4,7 +4,7 @@
 
 - **自动收割。** 监听 `session/event` 流的 checkpoint 消息（`user/message` 事件，`data.source` 标记 compact 插件；`compaction/summary` 只是元数据事件，不作为收割点），把摘要**按持久节分段**存进本地库（幂等：同一事件 seq + 段序只入一次，重放/重启不重复）。子代理会话的 checkpoint 同 workspace 也收割。
 - **收割分段。** 只收持久节（Primary Request and Intent / Key Technical Concepts / Files and Code / Errors and Fixes / Critical Context），丢掉 Pending Jobs / Current Work / Next Step 这类死会话瞬时状态；节（含标题）≤ `maxEntryChars` 整节一段，超帽按顶层 bullet 贪心装箱（`(cont. i/N)` 标注），非列表节按段落切，单块仍超帽按 ``` fence 边界拆，再超才硬截断并标注 `[segment truncated: N chars omitted]`——全系统唯一数据丢失路径。解析不出已知标题时整条原样入段，永不丢数据。切分是 (text, cap) 纯函数，重收割确定性幂等。
-- **双池注入预算。** manual（global → workspace → session，各自新→旧）与 compaction（checkpoint 组新→旧）分开计费互不挤占：compaction 池按**整组准入**（一个 checkpoint 的全部段同进同出，绝不腰斩），超出从最旧整组丢；manual 池按**总字符**（`maxManualChars`，默认 10000）从最新贪心累计——cumulative + 本条长度 ≤ 预算才收，**第一条放不下即停**（不跳过继续收更老的短条，保新→旧序；默认 10000 ≥ 单条帽 2500，任何合法单条都能单独放下），超出从最旧端丢。池装不下时块尾标注 `(N older memories omitted)`。
+- **双池注入预算。** manual（global → workspace → session，各自新→旧）与 compaction（checkpoint 组新→旧）分开计费互不挤占：compaction 池按**整组准入**（一个 checkpoint 的全部段同进同出，绝不腰斩）且同时受**组数**（`maxCompactionSummaries`）与**总字符**（`maxCompactionChars`，默认 20000——组的段数上不封顶，只限组数会让两个巨型 checkpoint 注入数万字符）两个预算约束，任一超限即从最旧整组丢；manual 池按**总字符**（`maxManualChars`，默认 10000）从最新贪心累计——cumulative + 本条长度 ≤ 预算才收，**第一条放不下即停**（不跳过继续收更老的短条，保新→旧序；默认 10000 ≥ 单条帽 2500，任何合法单条都能单独放下），超出从最旧端丢。池装不下时块尾标注 `(N older memories omitted)`。
 - **空白归一（渲染层）。** 注入前折叠连续空行、剥行尾空白；代码 fence 内原样不动。store 永存原文，digest 对归一化后的整块计算。
 - **链式 compaction 去重。** 新 summary 的 shadowed seqs 命中旧 checkpoint 时，旧组的全部段标记 superseded、不再注入。
 - **自身新摘要不重复注入。** 给会话 S 装配记忆块时，排除 `session_id = S.id` 的 compaction 行：S 刚 /compact 完，最新 checkpoint 替换行还在它自己的 surface 上，再注入就是同一份摘要二连给模型。排除先于预算，腾出的池槽位让给更老的合格组；手工笔记（含 S 自己的 session 笔记）永不排除。fork 继承父 surface 但保留原 session_id，被继承的组仍可见。
@@ -23,17 +23,18 @@ memory_write content="用户偏好极简回复" scope="global"     # 跨 workspa
 memory_write content="本项目用 pnpm + tsdown 构建"          # 默认 workspace 级
 memory_write content="当前会话的临时结论" scope="session"    # 只在本会话注入，会话结束清除
 memory_list                                                 # 查当前可见的全部记忆
-memory_list keyword="pnpm"                                  # 关键词过滤（LIKE）
+memory_list keyword="pnpm"                                  # 关键词过滤（LIKE 通配符已转义，字面匹配）
+memory_list full=true                                         # 全量内容（默认 240 字符预览；合并/改写流程需要全量）
 memory_forget id=3                                          # 按 id 删除（id 见 memory_list）
 ```
 
-工具描述明确要求：只存跨会话有用的持久知识（项目事实、踩坑修复、用户偏好），不存一次性细节。`memory_write` 内容超 `maxEntryChars` 时写入即截断并标注同款 `[segment truncated: N chars omitted]`。
+工具描述明确要求：只存跨会话有用的持久知识（项目事实、踩坑修复、用户偏好），不存一次性细节。`memory_write` 内容超 `maxEntryChars` 时写入即截断并标注同款 `[segment truncated: N chars omitted]`。`memory_forget` 带**可见性围栏**：只删调用会话能看到（`memory_list` 同款范围）的行，猜的 id 碰不到其它 workspace 的池；删 checkpoint 的**任一**段会整组删除（单行删会把半截 checkpoint 留在注入块里）；删后重放同一收割事件会重新入库。`memory_list` 的 keyword 做 LIKE 字面匹配（`%`/`_` 已转义）。
 
 ## 记忆整理指令
 
 `/memory-tidy` 一条命令快速发起对**当前 workspace** 记忆库的一次整理：宿主半边生成一份固定的整理 prompt（`pure.ts` 的 `buildTidyPrompt`，字节钉死可快照），通过 `agent.steer` 作为一条 durable `user/message`（source `kind: 'user'`）交给当前 agent——空闲 agent 会被唤醒，下一轮由 agent 自己用三个记忆工具执行整理：
 
-1. `memory_list` 全量列出（含 id / scope / kind / created）；
+1. `memory_list`（`full=true`）全量列出（含 id / scope / kind / created / 完整内容）；
 2. **合并重复**：同一事实多条记录，保留最新最完整一条（必要时先 `memory_write` 合并版），其余 `memory_forget`；
 3. **删除过期**：已被新事实取代、不再成立或纯一次性信息的条目；
 4. **解决冲突**：矛盾版本以 `created` 较新的事实为基准，保留（或改写为）较新正确版本，删除/改写较旧版本；不矛盾的版本都保留；
@@ -79,7 +80,8 @@ $DSH_HOME/dsh-memory/memory.db     # DSH_HOME 有设置时
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `maxEntryChars` | `2500` | 段帽：收割分段阈值 + `memory_write` 截断阈值。改配置不重切已入库段（重收割被幂等挡住），可删库重来 |
-| `maxCompactionSummaries` | `2` | compaction 池大小：整组准入，最旧整组丢弃（同组全部段同进同出） |
+| `maxCompactionSummaries` | `2` | compaction 池组数：整组准入，最旧整组丢弃（同组全部段同进同出） |
+| `maxCompactionChars` | `20000` | compaction 池总字符预算：累计整组内容字符，超限从最旧整组丢（组段数无上界，只限组数不够） |
 | `maxManualChars` | `10000` | manual 池总字符预算：新→旧贪心累计准入（cumulative + 本条 ≤ 预算才收），第一条放不下即停（不跳过，保新→旧序；默认 ≥ 单条帽 2500，任何合法单条都能单独放下），最旧端丢弃 |
 
 示例（profile 层 cordis.patch.yml）：
@@ -89,6 +91,7 @@ $DSH_HOME/dsh-memory/memory.db     # DSH_HOME 有设置时
   name: dsh-me/plugins/memory
   config:
     maxCompactionSummaries: 3
+    maxCompactionChars: 30000
     maxManualChars: 8000
 ```
 

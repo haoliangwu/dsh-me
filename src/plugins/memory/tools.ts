@@ -35,7 +35,7 @@ function workspaceKeyOf(exec: ToolExecLike): string | null {
 /** Content preview length for list output (token-light rows). */
 const CONTENT_PREVIEW = 240
 
-/** One list row as the model sees it: previewed content plus provenance. */
+/** One list row as the model sees it: provenance plus content (previewed unless the caller asked for full text). */
 interface ListEntry {
   readonly id: number
   readonly scope: ManualScope
@@ -53,9 +53,9 @@ function resolveWriteScope(req: ManualScope, exec: ToolExecLike): ManualScope {
   return 'session'
 }
 
-/** List-row projection: scope from columns, content previewed to {@link CONTENT_PREVIEW}. */
-function toListEntry(row: MemoryBlockRow): ListEntry {
-  const content = row.content.length > CONTENT_PREVIEW
+/** List-row projection: scope from columns, content previewed unless `full` asked for the complete text. */
+function toListEntry(row: MemoryBlockRow, full: boolean): ListEntry {
+  const content = !full && row.content.length > CONTENT_PREVIEW
     ? `${row.content.slice(0, CONTENT_PREVIEW - 3)}...`
     : row.content
   return {
@@ -158,7 +158,11 @@ export function installMemoryTools(
     parameters: {
       keyword: {
         type: 'string',
-        description: 'Optional substring filter over memory content',
+        description: 'Optional substring filter over memory content (matches literally; LIKE wildcards are escaped)',
+      },
+      full: {
+        type: 'boolean',
+        description: 'Return the complete content instead of the 240-char preview; needed for merge/rewrite passes (e.g. /memory-tidy)',
       },
     },
     output: {
@@ -188,20 +192,22 @@ export function installMemoryTools(
         text: value.memories.length === 0 ? 'no memories' : JSON.stringify(value.memories),
       }],
     },
-    async execute(args: { keyword?: string }, exec: ToolExecLike) {
+    async execute(args: { keyword?: string; full?: boolean }, exec: ToolExecLike) {
       const caller = exec.agent
       if (caller === undefined) throw new Error('memory_list needs a calling agent (exec.agent is empty)')
       exec.signal?.throwIfAborted()
       const rows = store.listActive(workspaceKeyOf(exec), caller.session?.id ?? null, args.keyword)
-      return { memories: rows.map(toListEntry) }
+      return { memories: rows.map(row => toListEntry(row, args.full === true)) }
     },
   })))
 
   disposers.push(ctx.register(defineTool({
     name: 'memory_forget',
     description:
-      'Delete one stored memory by its id (see memory_list). Use for outdated or wrong memories; '
-      + 'deletion is permanent unless the host replays the same compaction event.',
+      'Delete one stored memory by its id (see memory_list). Only rows visible to the calling '
+      + 'session can be deleted — a guessed id never touches another workspace\'s pool. Deleting one '
+      + 'segment of a harvested checkpoint removes the whole checkpoint group. Use for outdated or '
+      + 'wrong memories; deletion is permanent unless the host replays the same compaction event.',
     parameters: {
       id: {
         type: 'integer',
@@ -219,16 +225,24 @@ export function installMemoryTools(
       },
       render: (_args, value: { deleted: boolean }) => [{
         type: 'text',
-        text: value.deleted ? 'memory deleted' : 'memory not found',
+        text: value.deleted ? 'memory deleted' : 'memory not found (or not visible to this session)',
       }],
     },
     async execute(args: { id: number }, exec: ToolExecLike) {
+      const caller = exec.agent
+      if (caller === undefined) throw new Error('memory_forget needs a calling agent (exec.agent is empty)')
       exec.signal?.throwIfAborted()
-      const deleted = store.deleteById(args.id) > 0
+      // Scope fence: the caller can only delete rows its own session can see
+      // (listActive visibility) — the group expansion inside the store follows
+      // the target row's own workspace, so a foreign id can never fire it.
+      const deleted = store.deleteMemory(args.id, {
+        workspace: workspaceKeyOf(exec),
+        sessionId: caller.session?.id ?? null,
+      }) > 0
       // The one tool side-effect: a real deletion must drop the calling
       // session's injected-row pin (the deleted bytes would otherwise stay
       // model-visible until the next compaction).
-      if (deleted) onForget?.(exec.agent?.session?.id)
+      if (deleted) onForget?.(caller.session?.id)
       return { deleted }
     },
   })))
