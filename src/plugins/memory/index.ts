@@ -14,7 +14,10 @@
  * allowed only right after this session's own compaction (whose cache
  * invalidation the refresh rides); store changes between compactions pin the
  * row byte-stable instead of busting the prefix. `memory_write` / `memory_list` /
- * `memory_forget` give the agent an explicit memory API. Harvest and
+ * `memory_forget` give the agent an explicit memory API, and the `/memory-tidy`
+ * command steers the agent with a generated prompt to reorganize the current
+ * workspace's memory (merge duplicates, drop stale entries, settle conflicts
+ * on the newer fact). Harvest and
  * injection are fully fault-isolated: a failure only logs a warning, never
  * reaches the host event stream or the agent waterfall.
  *
@@ -37,6 +40,7 @@ import z from '@deepseek-ai/schemastery'
 import {
   assembleMemoryBlock,
   buildMemoryMessage,
+  buildTidyMessage,
   cwdToWorkspaceKey,
   detectSupersession,
   extractCheckpointSummary,
@@ -91,6 +95,35 @@ const CHANNEL = '/dsh-memory'
 
 /** Endpoint under {@link CHANNEL}: `{sessionId, cwd}` → `{block}` (the verbatim injected block). */
 const ENDPOINT_BLOCK = 'block'
+
+/**
+ * Slash command name: one-shot generation of the memory-reorg prompt. The
+ * handler steers the receiving agent with the prompt as a durable user
+ * message; the agent then reorganizes through the three memory tools.
+ */
+export const TIDY_COMMAND = 'memory-tidy'
+
+/** Structural command-invocation face for `/memory-tidy` (the registry's CommandInvocation). */
+interface TidyInvocationLike {
+  readonly agent: { readonly session: LiveSessionLike; steer(message: UserMessage): void }
+  readonly rawInput: string
+  readonly signal: AbortSignal
+}
+
+/** Structural command-result face (the registry's CommandResult). */
+type TidyResultLike = { readonly kind: 'success'; readonly text?: string } | { readonly kind: 'error'; readonly text: string }
+
+/** Structural command-registry face (the child context the inject grants). */
+interface CommandChildContextLike {
+  commands: {
+    register(definition: {
+      readonly name: string
+      readonly description: string
+      readonly input?: { readonly hint: string }
+      readonly handler: (invocation: TidyInvocationLike) => TidyResultLike | Promise<TidyResultLike>
+    }): () => void
+  }
+}
 
 /**
  * Structural live session as the pre-step reads it: the harness `Agent`
@@ -206,15 +239,26 @@ function sessionCompactedSince(session: LiveSessionLike, rowSeq: number): boolea
  *   compaction already caused;
  * - row + differing digest + NO compaction since the row → no-op (epoch
  *   pinning: the block stays pinned to the session's last epoch — its start
- *   or its latest compaction — and store changes wait for the next epoch);
+ *   or its latest compaction — and store changes wait for the next epoch),
+ *   UNLESS `forceRefresh` is set (the `/memory-tidy` sync): then replace in
+ *   place immediately — the row's own session just reorganized the store
+ *   through its tools, so the refresh is the point of the run, and granting
+ *   it never touches other sessions' pinned rows;
  * - empty block → never inject (a stale row, if any, is left on the surface —
  *   documented edge, README).
  * @param store - the memory store.
  * @param session - the live session (cwd + surface + log).
  * @param options - the dual-pool budget.
+ * @param forceRefresh - whether a mid-epoch digest change replaces the row
+ *   right away (the `/memory-tidy` post-run sync); defaults to false.
  * @returns the injection plan.
  */
-export function planMemoryInjection(store: MemoryStore, session: LiveSessionLike, options: MemoryBudgetOptions): MemoryInjectionPlan {
+export function planMemoryInjection(
+  store: MemoryStore,
+  session: LiveSessionLike,
+  options: MemoryBudgetOptions,
+  forceRefresh = false,
+): MemoryInjectionPlan {
   const cwd = session.header.cwd
   if (cwd === undefined) return { kind: 'none' }
   const block = assembleMemoryBlock(store.listActive(cwdToWorkspaceKey(cwd), session.id ?? null), options, session.id ?? undefined)
@@ -224,7 +268,7 @@ export function planMemoryInjection(store: MemoryStore, session: LiveSessionLike
   if (row === undefined) return { kind: 'append', message }
   const digest = (message.source as { readonly digest?: string }).digest
   if (digest !== undefined && row.digest === digest) return { kind: 'none' }
-  if (!sessionCompactedSince(session, row.seq)) return { kind: 'none' }
+  if (!forceRefresh && !sessionCompactedSince(session, row.seq)) return { kind: 'none' }
   return { kind: 'replace', message, rowSeq: row.seq }
 }
 
@@ -235,8 +279,11 @@ interface MemoryCtx {
   get(name: 'webServer'): {
     register(route: { kind: 'prefix'; path: string; handler: (req: IncomingMessage, res: ServerResponse) => void }): () => void
   } | undefined
+  /** Child command-registry mount: the `/memory-tidy` command ships only when a command registry is composed (plan-mode pattern). */
+  inject(dependencies: readonly ['commands'], callback: (child: CommandChildContextLike) => void): unknown
   on(event: 'session/event', listener: (session: SessionLike, event: CheckpointEventLike) => void): () => void
   on(event: 'session/disposed', listener: (session: SessionLike) => void): () => void
+  on(event: 'agent/turn-stopping', listener: (payload: { readonly agent: { readonly session: { readonly id: string } } }) => void): () => void
   on(event: 'agent/pre-step', listener: (payload: PreStepPayloadLike, next: () => Promise<PreStepDecisionLike>) => Promise<PreStepDecisionLike>): () => void
 }
 
@@ -316,6 +363,16 @@ export function apply(ctx: Context, config: Config): void {
   mkdirSync(memoryDir, { recursive: true })
   const db = new DatabaseSync(join(memoryDir, MEMORY_FILE))
   const store = new MemoryStore(db)
+  // Sessions that ran `/memory-tidy` and still owe the injected row a refresh:
+  // the row is normally epoch-pinned (a mid-epoch store change waits for the
+  // next compaction), but the tidy run IS its own store change — after the
+  // agent's tools land, the next pre-step must splice the refreshed block in
+  // place. The flag is set by the command handler, consumed on the first
+  // pre-step whose assembled digest differs from the surfaced row, and
+  // cleared when the tidy turn closes (no change made → nothing to sync) or
+  // the session disposes. Scoped to one session id, so sibling sessions keep
+  // their pinned rows untouched.
+  const pendingTidySync = new Map<string, true>()
   const budget: MemoryBudgetOptions = {
     maxEntryChars: config.maxEntryChars ?? DEFAULT_MAX_ENTRY_CHARS,
     maxCompactionSummaries: config.maxCompactionSummaries ?? DEFAULT_MAX_COMPACTION_SUMMARIES,
@@ -351,13 +408,18 @@ export function apply(ctx: Context, config: Config): void {
     // memory runs after it and merges at the message tail.
     disposers.push(scoped.on('agent/pre-step', async (payload, next) => {
       const session = payload.agent?.session
+      const sessionId = session?.id
+      // The `/memory-tidy` sync: this session's tidy run may have changed the
+      // store mid-epoch — let the digest comparison replace the row right
+      // away instead of waiting for a compaction boundary.
+      const forceRefresh = sessionId !== undefined && pendingTidySync.has(sessionId)
       let plan: MemoryInjectionPlan = { kind: 'none' }
       try {
         // Same fault-isolation discipline as harvest: any store/log failure
         // here is contained to a warning; the waterfall always proceeds.
         plan = session === undefined
           ? { kind: 'none' }
-          : planMemoryInjection(store, session, budget)
+          : planMemoryInjection(store, session, budget, forceRefresh)
       } catch (error) {
         ctx.logger.warn(`[dsh-memory] injection failed: ${error instanceof Error ? error.message : String(error)}`)
       }
@@ -377,6 +439,9 @@ export function apply(ctx: Context, config: Config): void {
         } catch (error) {
           ctx.logger.warn(`[dsh-memory] memory row replace failed: ${error instanceof Error ? error.message : String(error)}`)
         }
+        // The tidy sync is served: the refreshed row is on the surface (or
+        // the replace failed — a later pre-step re-computes and retries).
+        if (sessionId !== undefined) pendingTidySync.delete(sessionId)
       }
       const decision = await next()
       if (plan.kind !== 'append' || session === undefined || decision.kind !== 'enter') return decision
@@ -454,13 +519,24 @@ export function apply(ctx: Context, config: Config): void {
     }))
 
     // Session disposal clears that session's notes (spec US-12); workspace
-    // checkpoints survive their source session.
+    // checkpoints survive their source session. It also drops any pending
+    // tidy sync (the session is gone, the flag is meaningless).
     disposers.push(scoped.on('session/disposed', (session) => {
+      pendingTidySync.delete(session.id)
       try {
         store.deleteSessionRows(session.id)
       } catch (error) {
         ctx.logger.warn(`[dsh-memory] session cleanup failed: ${error instanceof Error ? error.message : String(error)}`)
       }
+    }))
+
+    // A closed turn settles the tidy run's sync window: if the reorg changed
+    // the store, an earlier post-tool pre-step already replaced the row and
+    // consumed the flag; if it changed nothing, the flag must not leak into
+    // later turns (a stale flag would force an immediate replace on some
+    // unrelated future write, breaking epoch pinning).
+    disposers.push(scoped.on('agent/turn-stopping', (payload) => {
+      pendingTidySync.delete(payload.agent.session.id)
     }))
 
     return () => {
@@ -471,5 +547,41 @@ export function apply(ctx: Context, config: Config): void {
         // Already closed: nothing to release.
       }
     }
+  })
+
+  // The `/memory-tidy` command, mounted through a commands-injected child so
+  // the core memory fiber stays headless-safe: compositions without a command
+  // registry (ACP, bare demo trunks) still mount the store, harvest, and
+  // tools. One handler call builds the reorganization prompt (pure.ts, pinned
+  // verbatim) and steers the receiving agent with it as a durable user
+  // message — the steer path persists the prompt as a user/message row and
+  // wakes an idle agent, so the agent's next turn runs the reorg through the
+  // three memory tools (memory_list → classify → memory_write/memory_forget).
+  // Like the injected memory row, the steered prompt is model-visible and
+  // fully log-reconstructable; the handler itself only needs the agent's cwd
+  // to guarantee a real workspace target (the same gate memory_write applies).
+  scoped.inject(['commands'], (commandCtx) => {
+    commandCtx.commands.register({
+      name: TIDY_COMMAND,
+      description: '整理当前 workspace 的记忆：合并重复、删除过期、解决冲突（以较新事实为准）',
+      input: { hint: '可选：附加的整理要求' },
+      handler: (invocation) => {
+        invocation.signal.throwIfAborted()
+        if (invocation.agent.session.header.cwd === undefined) {
+          return {
+            kind: 'error',
+            text: '/memory-tidy: 当前会话没有 workspace（session.header.cwd 为空），无法定位要整理的记忆',
+          }
+        }
+        invocation.agent.steer(buildTidyMessage(invocation.rawInput))
+        // The post-tidy sync: once the agent's reorg turn actually changes
+        // the store, the next pre-step of THIS session splices the refreshed
+        // block in place (forceRefresh in planMemoryInjection), instead of
+        // waiting for a compaction epoch. Other sessions keep their pinned
+        // rows; the flag is consumed by the refresh or cleared at turn close.
+        pendingTidySync.set(invocation.agent.session.id, true)
+        return { kind: 'success', text: '/memory-tidy: 已生成整理 prompt 并交给 agent（见下一条消息）' }
+      },
+    })
   })
 }

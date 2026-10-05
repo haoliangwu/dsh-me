@@ -15,7 +15,7 @@ import { MessageId } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { apply, Config, inject, name, type PreStepDecisionLike, type PreStepPayloadLike } from './index.ts'
-import { digestOf, MEMORY_HEADER_LINE } from './pure.ts'
+import { buildTidyMessage, buildTidyPrompt, digestOf, MEMORY_HEADER_LINE } from './pure.ts'
 
 /** One logged event of the fake session (the fields the scan and harvest read). */
 interface FakeEvent {
@@ -154,6 +154,13 @@ interface Mounted {
   warnSpy: ReturnType<typeof vi.fn>
   /** Prefix routes captured from the fake webServer (the Memory tab channel). */
   routes: Array<{ kind: string; path: string; handler: (req: unknown, res: unknown) => void }>
+  /** Command definitions captured from the fake commands child (the /memory-tidy command). */
+  commands: Array<{
+    name: string
+    description: string
+    input?: { hint: string }
+    handler: (invocation: { agent: { session: { id: string; header: { cwd?: string } }; steer: (message: UserMessage) => void }; rawInput: string; signal: AbortSignal }) => unknown
+  }>
 }
 
 /** Boot apply over a structurally-mocked cordis context and capture every seam. */
@@ -162,6 +169,7 @@ function mount(config: Record<string, unknown> = {}): Mounted {
   const tools: Mounted['tools'] = []
   const warnSpy = vi.fn()
   const routes: Mounted['routes'] = []
+  const commands: Mounted['commands'] = []
   const fakeWebServer = {
     register: (route: { kind: string; path: string; handler: (req: unknown, res: unknown) => void }) => {
       routes.push(route)
@@ -180,6 +188,13 @@ function mount(config: Record<string, unknown> = {}): Mounted {
     },
     // cordis optional-service read: the plugin resolves webServer via ctx.get.
     get: (name: string) => (name === 'webServer' ? fakeWebServer : undefined),
+    // cordis child inject: the /memory-tidy command mounts into a fake
+    // commands registry the moment apply runs (same eager resolution the
+    // composed harness performs at load).
+    inject: vi.fn((_deps: unknown, callback: (child: { commands: { register: (def: Mounted['commands'][number]) => () => void } }) => void) => {
+      callback({ commands: { register: (def) => { commands.push(def); return () => {} } } })
+      return {}
+    }),
   }
   apply(ctx as never, Config(config) as never)
   return {
@@ -203,6 +218,7 @@ function mount(config: Record<string, unknown> = {}): Mounted {
       ) ?? downstreamDecision()),
     warnSpy,
     routes,
+    commands,
   }
 }
 
@@ -707,6 +723,158 @@ describe('tools', () => {
     await mounted.fire('session/event', session, checkpointEvent(10, [1], SUMMARY_TEXT))
     const listed = await mounted.executes('memory_list', {}, { agent: { id: 's1', session } })
     expect((listed as { memories: Array<{ kind: string }> }).memories[0]?.kind).toBe('compaction')
+  })
+})
+
+describe('memory-tidy command', () => {
+  it('builds the prompt covering the three reorg rules and pins the message source to user', () => {
+    const plain = buildTidyPrompt('')
+    expect(plain).toContain('任务：整理当前 workspace 的 dsh-memory 记忆库')
+    expect(plain).toContain('合并重复记忆')
+    expect(plain).toContain('删除过期记忆')
+    expect(plain).toContain('created 较新的事实为基准')
+    expect(plain).toContain('memory_list')
+    expect(plain).toContain('memory_forget')
+    expect(plain).toContain('memory_write')
+    const withExtra = buildTidyPrompt('  只整理数据库相关条目  ')
+    expect(withExtra).toContain('附加要求（用户指定）：只整理数据库相关条目')
+    const message = buildTidyMessage(withExtra)
+    expect(message.role).toBe('user')
+    expect((message.source as { kind: string }).kind).toBe('user')
+    expect((message.content[0] as { text: string }).text).toBe(buildTidyPrompt(withExtra))
+  })
+
+  it('registers /memory-tidy only through the commands child inject', () => {
+    const mounted = mount()
+    expect(mounted.commands.map(command => command.name)).toEqual(['memory-tidy'])
+    expect(mounted.commands[0]?.description).toContain('整理')
+  })
+
+  it('steers the receiving agent with the tidy prompt and acknowledges success', async () => {
+    const mounted = mount()
+    const command = mounted.commands[0]
+    if (command === undefined) throw new Error('memory-tidy not registered')
+    const session = fakeSession('/work/a', 's1')
+    const steer = vi.fn()
+    const result = await command.handler({
+      agent: { session: { id: session.id, header: session.header }, steer },
+      rawInput: '  ',
+      signal: new AbortController().signal,
+    })
+    expect(result).toEqual({ kind: 'success', text: '/memory-tidy: 已生成整理 prompt 并交给 agent（见下一条消息）' })
+    expect(steer).toHaveBeenCalledTimes(1)
+    const steered = steer.mock.calls[0]?.[0] as UserMessage
+    expect(steered.role).toBe('user')
+    expect((steered.source as { kind: string }).kind).toBe('user')
+    const text = (steered.content[0] as { text: string }).text
+    expect(text).toBe(buildTidyPrompt('  '))
+    expect(text).toContain('合并重复记忆')
+    expect(text).toContain('删除过期记忆')
+    expect(text).toContain('created 较新的事实为基准')
+  })
+
+  it('forwards the raw input as an extra constraint into the steered prompt', async () => {
+    const mounted = mount()
+    const command = mounted.commands[0]
+    if (command === undefined) throw new Error('memory-tidy not registered')
+    const steer = vi.fn()
+    await command.handler({
+      agent: { session: { id: 's1', header: { cwd: '/work/a' } }, steer },
+      rawInput: '只整理数据库相关条目',
+      signal: new AbortController().signal,
+    })
+    const steered = steer.mock.calls[0]?.[0] as UserMessage
+    expect((steered.content[0] as { text: string }).text).toContain('附加要求（用户指定）：只整理数据库相关条目')
+  })
+
+  it('rejects without steering when the session carries no cwd (no workspace to target)', async () => {
+    const mounted = mount()
+    const command = mounted.commands[0]
+    if (command === undefined) throw new Error('memory-tidy not registered')
+    const steer = vi.fn()
+    const result = await command.handler({
+      agent: { session: { id: 's1', header: {} }, steer },
+      rawInput: '',
+      signal: new AbortController().signal,
+    })
+    expect(result).toMatchObject({ kind: 'error' })
+    expect((result as { text?: string }).text).toContain('没有 workspace')
+    expect(steer).not.toHaveBeenCalled()
+  })
+})
+
+describe('memory-tidy sync (post-reorg injected-row refresh)', () => {
+  beforeEach(() => {
+    process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-memory-test-'))
+  })
+  afterEach(() => {
+    if (process.env.DSH_HOME !== undefined) rmSync(process.env.DSH_HOME, { recursive: true, force: true })
+    delete process.env.DSH_HOME
+  })
+
+  /** A surfaced memory row whose block the store does not yet reflect (no compaction after the row, so the mid-epoch pin would normally hold). */
+  function staleSession(): FakeSession {
+    const oldBlock = '## Project Memory\n<project-memory>\n<note id="1" scope="workspace">old fact</note>\n</project-memory>'
+    return fakeSession('/work/a', 's1', [memoryRow(messageText(oldBlock))])
+  }
+
+  /** Run the command handler exactly like the UI does (steer ignored here: the agent + its tools are driven by the test directly). */
+  async function armTidy(mounted: Mounted): Promise<void> {
+    const command = mounted.commands[0]
+    if (command === undefined) throw new Error('memory-tidy not registered')
+    await command.handler({
+      agent: { session: { id: 's1', header: { cwd: '/work/a' } }, steer: vi.fn() },
+      rawInput: '',
+      signal: new AbortController().signal,
+    })
+  }
+
+  it('replaces the pinned row in place once the armed session\'s store changed', async () => {
+    const mounted = mount()
+    const session = staleSession()
+    await mounted.executes('memory_write', { content: 'new fact' }, { agent: { id: 's1', session } })
+    await armTidy(mounted)
+    const decision = await mounted.prestep(session)
+    expect(injectedMemoryMessage(decision)).toBeUndefined()
+    expect(session.appends).toHaveLength(1)
+    const append = session.appends[0]
+    expect(append?.type).toBe('user/message')
+    const opts = append?.opts as { surfaceOp: { op: string; startSeq: number; endSeq: number }; sourceEventSeqs: number[] }
+    expect(opts.surfaceOp).toEqual({ op: 'replace', startSeq: 0, endSeq: 0 })
+    expect(opts.sourceEventSeqs).toEqual([0])
+    const data = append?.data as UserMessage
+    expect((data.content[0] as { text: string }).text).toContain('new fact')
+    // The sync is consumed: a later pre-step is a byte-stable no-op again.
+    expect(await mounted.prestep(session)).toEqual(downstreamDecision())
+    expect(session.appends).toHaveLength(1)
+  })
+
+  it('stays armed across unchanged pre-steps (tidy step 1) and refreshes on the first change (tidy step 2)', async () => {
+    const mounted = mount()
+    const session = staleSession()
+    await armTidy(mounted)
+    // Pre-step before the tools ran: the digest still matches the surfaced
+    // row, nothing replaces, and the flag stays armed for the post-tool step.
+    expect(await mounted.prestep(session)).toEqual(downstreamDecision())
+    expect(session.appends).toEqual([])
+    // The reorg writes land, then the post-tool pre-step splices the row.
+    await mounted.executes('memory_write', { content: 'new fact' }, { agent: { id: 's1', session } })
+    const decision = await mounted.prestep(session)
+    expect(session.appends).toHaveLength(1)
+    const opts = session.appends[0]?.opts as { surfaceOp: { op: string } }
+    expect(opts.surfaceOp.op).toBe('replace')
+  })
+
+  it('clears the armed sync when the tidy turn closes without a change (no leak into later writes)', async () => {
+    const mounted = mount()
+    const session = staleSession()
+    await armTidy(mounted)
+    // The reorg turn ends having changed nothing: the flag must not force an
+    // immediate replace on some unrelated future write.
+    await mounted.fire('agent/turn-stopping', { agent: { session: { id: 's1' } } })
+    await mounted.executes('memory_write', { content: 'new fact' }, { agent: { id: 's1', session } })
+    expect(await mounted.prestep(session)).toEqual(downstreamDecision())
+    expect(session.appends).toEqual([])
   })
 })
 

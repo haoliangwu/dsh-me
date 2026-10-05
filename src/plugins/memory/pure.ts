@@ -698,3 +698,52 @@ export function buildMemoryMessage(block: string): UserMessage {
     } as unknown as UserMessage['source'],
   }
 }
+
+/**
+ * Build the `/memory-tidy` prompt: the exact model-visible instruction that
+ * steers the agent to reorganize the current workspace's memory bank. One
+ * job, three rules — merge duplicates, drop stale entries, settle conflicts
+ * on the newer fact — plus a scope guard (workspace/session first, global
+ * only on clear evidence) and a mandatory operation log. Pinned verbatim so
+ * a recorded session holds the prompt byte-stable.
+ * @param extra - optional user-supplied constraint (the command's rawInput);
+ *   ignored when blank.
+ * @returns the prompt text.
+ */
+export function buildTidyPrompt(extra: string): string {
+  const base = [
+    '任务：整理当前 workspace 的 dsh-memory 记忆库。',
+    '',
+    '背景：记忆由 memory_list / memory_write / memory_forget 三个工具管理，当前可见的记忆已注入在本会话上下文（见上方注入的记忆块）。',
+    '',
+    '执行步骤：',
+    '1. 调用 memory_list 列出当前可见的全部记忆（每条含 id、scope、kind、created）。',
+    '2. 合并重复记忆：描述同一事实的多条记录，保留最新、最完整的一条（必要时先用 memory_write 写入合并后的完整版本），其余用 memory_forget 删除。',
+    '3. 删除过期记忆：已被新事实取代、明确不再成立或纯一次性信息的记忆，用 memory_forget 删除。',
+    '4. 解决冲突记忆：同一事实存在相互矛盾版本时，以 created 较新的事实为基准——保留（必要时改写为）较新的正确版本，并删除或改写较旧版本；两个版本各自成立（并不矛盾）时都保留。',
+    '5. 专注当前 workspace 与当前会话的记忆；global 记忆跨 workspace 共享，仅在对重复、过期或冲突有明确把握时才改动。',
+    '6. 无把握的条目一律保留，并在总结中说明判断依据。',
+    '',
+    '完成后用简短总结报告：合并了哪些条目（id）、删除了哪些条目（id）、解决了哪几组冲突（id 列表 + 采用的新事实）。',
+  ]
+  const lines = base.join('\n')
+  const instruction = extra.trim()
+  return instruction === '' ? lines : `${lines}\n\n附加要求（用户指定）：${instruction}`
+}
+
+/**
+ * The steer payload `/memory-tidy` hands the receiving agent: a logged user
+ * message carrying the tidy prompt with a plain `kind: 'user'` source — the
+ * same source a human prompt carries, so the message is model-visible and
+ * fully reconstructable from the session log (model-visible ⟺ logged).
+ * @param extra - optional user-supplied constraint, forwarded into the prompt.
+ * @returns the user message payload to steer.
+ */
+export function buildTidyMessage(extra: string): UserMessage {
+  return {
+    id: MessageId(randomUUID()),
+    role: 'user',
+    content: [{ type: 'text', text: buildTidyPrompt(extra) }],
+    source: { kind: 'user' },
+  }
+}
