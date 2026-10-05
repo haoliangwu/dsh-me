@@ -51,6 +51,7 @@ export default defineConfig([
       'plugins/memory': 'src/plugins/memory/index.ts',
       'plugins/btw': 'src/plugins/btw/index.ts',
       'plugins/x-opencode-session-shim': 'src/plugins/x-opencode-session-shim/index.ts',
+      'plugins/subagent-oc': 'src/plugins/subagent-oc/index.ts',
       'plugins/reference': 'src/plugins/reference/index.ts',
       'plugins/undo': 'src/plugins/undo/index.ts',
     },
