@@ -7,10 +7,10 @@
  * no in-process Service shared across the host/browser boundary — the only
  * transport is the Connection RPC channel.
  */
-import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
-import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
 import z from '@deepseek-ai/schemastery'
+import { serveRpcChannel } from '../../shared/rpc-channel.ts'
 // Type-only import activates the optional webServer Context declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
 
@@ -32,6 +32,8 @@ export interface Config {
   notifyError?: boolean
   /** Notify when the agent asks the user a question (default: true). */
   notifyQuestion?: boolean
+  /** Notify when a tool asks for permission approval (default: true). */
+  notifyApproval?: boolean
   /** Play the synthesized chime instead of the OS default sound (default: true). */
   notifySound?: boolean
 }
@@ -40,6 +42,7 @@ export const Config = z.object({
   notifyCompletion: z.boolean().default(true),
   notifyError: z.boolean().default(true),
   notifyQuestion: z.boolean().default(true),
+  notifyApproval: z.boolean().default(true),
   notifySound: z.boolean().default(true),
 })
 
@@ -48,6 +51,7 @@ interface ConfigResponse {
   readonly notifyCompletion: boolean
   readonly notifyError: boolean
   readonly notifyQuestion: boolean
+  readonly notifyApproval: boolean
   readonly notifySound: boolean
 }
 
@@ -67,6 +71,7 @@ export function apply(ctx: Context, config: Config): void {
     notifyCompletion: config.notifyCompletion as boolean,
     notifyError: config.notifyError as boolean,
     notifyQuestion: config.notifyQuestion as boolean,
+    notifyApproval: config.notifyApproval as boolean,
     notifySound: config.notifySound as boolean,
   }
   // dsh-client-connection 0.1.5-rc.2: connection.rpc.handle() is unusable from
@@ -79,7 +84,7 @@ export function apply(ctx: Context, config: Config): void {
       kind: 'prefix',
       path: CHANNEL,
       handler: (req, res) => {
-        void serveChannel(req, res, CHANNEL, (endpoint) => {
+        void serveRpcChannel(req, res, { channel: CHANNEL, logLabel: 'dsh-ui-notification: /notification channel' }, (endpoint) => {
           if (endpoint === ENDPOINT_CONFIG) {
             return Promise.resolve({ ok: true as const, value: response })
           }
@@ -99,77 +104,3 @@ export function apply(ctx: Context, config: Config): void {
  * client-request envelope, server-response envelope out) so the browser-side
  * `connection.rpc.call()` keeps working unchanged.
  */
-async function serveChannel(
-  req: IncomingMessage,
-  res: ServerResponse,
-  channel: string,
-  handler: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<RpcResult<unknown>>,
-): Promise<void> {
-  const writeJson = (status: number, body: unknown): void => {
-    const bytes = Buffer.from(JSON.stringify(body))
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.setHeader('Content-Length', String(bytes.length))
-    res.writeHead(status)
-    res.end(bytes)
-  }
-  const endpoint = endpointFromPath(channel, req.url ?? '/')
-  if (req.method !== 'POST' || endpoint === undefined) {
-    res.writeHead(404)
-    res.end('not found')
-    return
-  }
-  if (req.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
-    res.writeHead(415)
-    res.end('content type must be application/json')
-    return
-  }
-  let body: unknown
-  try {
-    const chunks: Buffer[] = []
-    for await (const chunk of req) {
-      const part = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string)
-      chunks.push(part)
-    }
-    body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
-  } catch {
-    res.writeHead(400)
-    res.end('body is not JSON')
-    return
-  }
-  const message = (body ?? {}) as { type?: unknown; rpcId?: unknown; method?: unknown; payload?: unknown }
-  const respond = (result: RpcResult<unknown>): void =>
-    writeJson(200, { type: 'server-response', rpcId: typeof message.rpcId === 'string' ? message.rpcId : '', result })
-  if (message.type !== 'client-request'
-    || typeof message.rpcId !== 'string' || typeof message.method !== 'string') {
-    respond({ ok: false, error: { code: 'gateway/bad-request', message: 'invalid client-request message', details: {} } })
-    return
-  }
-  if (message.method !== endpoint) {
-    respond({
-      ok: false,
-      error: {
-        code: 'gateway/bad-request',
-        message: `method ${JSON.stringify(message.method)} does not match endpoint ${JSON.stringify(endpoint)}`,
-        details: {},
-      },
-    })
-    return
-  }
-  const controller = new AbortController()
-  req.once('aborted', () => controller.abort())
-  req.socket.once('close', () => controller.abort())
-  try {
-    respond(await handler(endpoint, message.payload, controller.signal))
-  } catch (error) {
-    res.writeHead(500)
-    res.end(`handler failure: ${String(error)}`)
-  }
-}
-
-/** Extract and validate the endpoint segment below the channel prefix. */
-function endpointFromPath(channel: string, pathname: string): string | undefined {
-  if (!pathname.startsWith(`${channel}/`)) return undefined
-  const endpoint = pathname.slice(channel.length + 1)
-  if (endpoint.split('/').some((segment) => segment === '' || segment === '.' || segment === '..' || !/^[A-Za-z0-9_$.-]+$/.test(segment))) return undefined
-  return endpoint
-}

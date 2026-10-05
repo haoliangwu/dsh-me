@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  approvalBody,
   assistantTurnText,
   bodyForTurnEnd,
-  pendingQuestionNotifications,
+  pendingInteractionNotifications,
   playChime,
   questionBody,
   shouldNotify,
@@ -15,12 +16,12 @@ import {
 } from './notification.ts'
 
 interface ToneRecord {
-  readonly frequency: number
-  readonly startedAt: number
-  readonly stoppedAt: number
-  readonly oscConnectedTo: unknown
-  readonly gainConnectedTo: unknown
-  readonly envelope: readonly { op: 'set' | 'ramp'; v: number; t: number }[]
+  frequency: number
+  startedAt: number
+  stoppedAt: number
+  oscConnectedTo: unknown
+  gainConnectedTo: unknown
+  envelope: readonly { op: 'set' | 'ramp'; v: number; t: number }[]
 }
 
 /** Fake audio context recording every scheduling call playChime makes. */
@@ -71,9 +72,9 @@ function interaction(
   key: string,
   kind: string,
   sessionId: string,
-  questions?: readonly { question?: string }[],
+  fields?: { questions?: readonly { question?: string }[]; toolName?: string; reason?: string },
 ): PendingInteractionShape {
-  return { key, kind, sessionId, ...(questions === undefined ? {} : { questions }) }
+  return { key, kind, sessionId, ...(fields === undefined ? {} : fields) }
 }
 
 function snapshot(...items: PendingInteractionShape[]): ReadonlyMap<string, PendingInteractionShape> {
@@ -139,7 +140,7 @@ describe('shouldNotify (tests 2+3: visibility gate and config toggles)', () => {
   })
 
   it('notifies for non-normal non-visible states', () => {
-    expect(shouldNotify('prerender', true)).toBe(true)
+    expect(shouldNotify('prerender' as DocumentVisibilityState, true)).toBe(true)
   })
 
   it('stays silent when the trigger toggle is off even while hidden', () => {
@@ -209,7 +210,7 @@ describe('assistantTurnText', () => {
   })
 })
 
-describe('question payloads', () => {
+describe('question and approval payloads', () => {
   it('joins question texts as the body', () => {
     expect(questionBody([{ question: '继续吗？' }, { question: '覆盖？' }])).toBe('继续吗？ / 覆盖？')
   })
@@ -218,10 +219,27 @@ describe('question payloads', () => {
     expect(questionBody([{ question: '' }, { question: 'go?' }])).toBe('go?')
   })
 
+  it('approval body is the tool alone without a reason', () => {
+    expect(approvalBody({ toolName: 'bash' })).toBe('bash')
+  })
+
+  it('approval body appends the reason after the tool', () => {
+    expect(approvalBody({ toolName: 'bash', reason: '需要写 /tmp/x' })).toBe('bash：需要写 /tmp/x')
+  })
+
+  it('approval body falls back to the reason when the tool is absent', () => {
+    expect(approvalBody({ reason: 'permission escalation' })).toBe('permission escalation')
+  })
+
+  it('approval body is empty when neither tool nor reason exists', () => {
+    expect(approvalBody({})).toBe('')
+  })
+
   it('titles carry the type marker and session name', () => {
     expect(titleFor('completion', 'my-session')).toBe('[dsh] 完成：my-session')
     expect(titleFor('error', 'my-session')).toBe('[dsh] 错误：my-session')
     expect(titleFor('question', 'my-session')).toBe('[dsh] 提问：my-session')
+    expect(titleFor('approval', 'my-session')).toBe('[dsh] 审批：my-session')
   })
 })
 
@@ -269,68 +287,88 @@ describe('playChime', () => {
   })
 })
 
-describe('pendingQuestionNotifications (test 4: question trigger from the uiSession pending-interaction face)', () => {
+describe('pendingInteractionNotifications (test 4: question/approval triggers from the uiSession pending-interaction face)', () => {
   it('fires a new question key and marks it seen', () => {
-    const result = pendingQuestionNotifications(
+    const result = pendingInteractionNotifications(
       new Set(),
-      snapshot(interaction('question:1', 'question', 's1', [{ question: '继续吗？' }])),
+      snapshot(interaction('question:1', 'question', 's1', { questions: [{ question: '继续吗？' }] })),
     )
     expect(result.keys).toEqual(['question:1'])
-    expect(result.fired).toEqual([{ sessionId: 's1', questions: [{ question: '继续吗？' }] }])
+    expect(result.fired).toEqual([{ sessionId: 's1', kind: 'question', body: '继续吗？' }])
   })
 
   it('fires plan-review interactions as question notifications', () => {
-    const result = pendingQuestionNotifications(
+    const result = pendingInteractionNotifications(
       new Set(),
-      snapshot(interaction('question:2', 'plan-review', 's2', [{ question: '批准计划？' }])),
+      snapshot(interaction('question:2', 'plan-review', 's2', { questions: [{ question: '批准计划？' }] })),
     )
-    expect(result.fired).toEqual([{ sessionId: 's2', questions: [{ question: '批准计划？' }] }])
+    expect(result.fired).toEqual([{ sessionId: 's2', kind: 'question', body: '批准计划？' }])
+  })
+
+  it('fires a pending approval with tool and reason', () => {
+    const result = pendingInteractionNotifications(
+      new Set(),
+      snapshot(interaction('approval:1', 'approval', 's1', { toolName: 'bash', reason: '需要写 /tmp/x' })),
+    )
+    expect(result.keys).toEqual(['approval:1'])
+    expect(result.fired).toEqual([{ sessionId: 's1', kind: 'approval', body: 'bash：需要写 /tmp/x' }])
+  })
+
+  it('fires an approval that carries only a tool name', () => {
+    const result = pendingInteractionNotifications(
+      new Set(),
+      snapshot(interaction('approval:2', 'approval', 's2', { toolName: 'bash' })),
+    )
+    expect(result.fired).toEqual([{ sessionId: 's2', kind: 'approval', body: 'bash' }])
   })
 
   it('marks unknown-domain keys seen without firing', () => {
-    const result = pendingQuestionNotifications(
+    const result = pendingInteractionNotifications(
       new Set(),
-      snapshot(interaction('approval:1', 'approval', 's1')),
+      snapshot(interaction('bg:1', 'background', 's1')),
     )
-    expect(result.keys).toEqual(['approval:1'])
+    expect(result.keys).toEqual(['bg:1'])
     expect(result.fired).toEqual([])
   })
 
   it('never re-fires a key already seen on a later snapshot', () => {
-    const first = pendingQuestionNotifications(new Set(), snapshot(
-      interaction('question:1', 'question', 's1', [{ question: '继续吗？' }]),
+    const first = pendingInteractionNotifications(new Set(), snapshot(
+      interaction('question:1', 'question', 's1', { questions: [{ question: '继续吗？' }] }),
     ))
-    const second = pendingQuestionNotifications(
+    const second = pendingInteractionNotifications(
       new Set(first.keys),
-      snapshot(interaction('question:1', 'question', 's1', [{ question: '继续吗？' }])),
+      snapshot(interaction('question:1', 'question', 's1', { questions: [{ question: '继续吗？' }] })),
     )
     expect(second.keys).toEqual([])
     expect(second.fired).toEqual([])
   })
 
   it('does not fire startup-seeded keys (already pending before plugin load)', () => {
-    const seeded = new Set(['question:1'])
-    const result = pendingQuestionNotifications(
+    const seeded = new Set(['question:1', 'approval:1'])
+    const result = pendingInteractionNotifications(
       seeded,
-      snapshot(interaction('question:1', 'question', 's1', [{ question: '继续吗？' }])),
+      snapshot(
+        interaction('question:1', 'question', 's1', { questions: [{ question: '继续吗？' }] }),
+        interaction('approval:1', 'approval', 's2', { toolName: 'bash' }),
+      ),
     )
     expect(result.keys).toEqual([])
     expect(result.fired).toEqual([])
   })
 
   it('fires only the new key on a mixed snapshot', () => {
-    const result = pendingQuestionNotifications(
+    const result = pendingInteractionNotifications(
       new Set(['question:1']),
       snapshot(
-        interaction('question:1', 'question', 's1', [{ question: 'old' }]),
-        interaction('question:2', 'question', 's2', [{ question: 'new' }]),
+        interaction('question:1', 'question', 's1', { questions: [{ question: 'old' }] }),
+        interaction('approval:2', 'approval', 's2', { toolName: 'read', reason: 'new' }),
       ),
     )
-    expect(result.keys).toEqual(['question:2'])
-    expect(result.fired).toEqual([{ sessionId: 's2', questions: [{ question: 'new' }] }])
+    expect(result.keys).toEqual(['approval:2'])
+    expect(result.fired).toEqual([{ sessionId: 's2', kind: 'approval', body: 'read：new' }])
   })
 
   it('handles an empty snapshot', () => {
-    expect(pendingQuestionNotifications(new Set(), snapshot())).toEqual({ keys: [], fired: [] })
+    expect(pendingInteractionNotifications(new Set(), snapshot())).toEqual({ keys: [], fired: [] })
   })
 })

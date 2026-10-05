@@ -9,7 +9,10 @@ import { assistantTextOfTurn } from '../../../shared/assistant-text'
 /** The reason payload of a durable `turn/end` event (structural). */
 export interface TurnEndReasonShape {
   readonly kind: string
-  readonly error?: { readonly message?: string }
+  /** Internal cause carried by `aborted` reasons. */
+  readonly reason?: { readonly kind?: string }
+  /** LlmFailure fields; `code` present on error reasons. */
+  readonly error?: { readonly message?: string; readonly code?: string }
 }
 
 /** One entry of the client session event window (structural). */
@@ -27,7 +30,7 @@ export type TurnEndOutcome =
   | { readonly type: 'error'; readonly message: string }
 
 /** Notification title marker per trigger type (spec: 事件类型 + 会话名). */
-export type TriggerKind = 'completion' | 'error' | 'question'
+export type TriggerKind = 'completion' | 'error' | 'question' | 'approval'
 
 /** Appended when `max-tokens` ended the turn (spec: 正文注明截断). */
 export const TRUNCATION_NOTE = '（已达 max-tokens，输出被截断）'
@@ -119,11 +122,26 @@ export function questionBody(items: readonly { question?: string }[]): string {
     .join(' / ')
 }
 
+/**
+ * Approval notification body: the tool asking for the decision, with the
+ * requester's reason appended when present.
+ * @param interaction - the pending approval's presentation fields.
+ * @returns the body, or '' when neither tool nor reason exists.
+ */
+export function approvalBody(interaction: { readonly toolName?: string; readonly reason?: string }): string {
+  const tool = interaction.toolName ?? ''
+  const reason = interaction.reason ?? ''
+  if (tool === '') return reason
+  if (reason === '') return tool
+  return `${tool}：${reason}`
+}
+
 /** Title marker per trigger type (spec: 事件类型 + 会话名). */
 const TRIGGER_MARKERS: Record<TriggerKind, string> = {
   completion: '完成',
   error: '错误',
   question: '提问',
+  approval: '审批',
 }
 
 /**
@@ -139,42 +157,50 @@ export function titleFor(kind: TriggerKind, sessionName: string): string {
 /** Notification emitter injected by the apply half. */
 export type NotifyFn = (title: string, body: string) => void
 
-/** One Session pending interaction (structural; the question domain's value carries `questions`). */
+/** One Session pending interaction (structural; the question domain's value carries `questions`, the approval domain's carries `toolName`/`reason`). */
 export interface PendingInteractionShape {
   readonly key: string
   readonly kind: string
   readonly sessionId: string
   readonly questions?: readonly { question?: string }[]
+  readonly toolName?: string
+  readonly reason?: string
 }
 
-/** A question-notification candidate selected from one pending-interactions snapshot. */
-export interface PendingQuestionFire {
+/** A notification candidate selected from one pending-interactions snapshot. */
+export interface PendingInteractionFire {
   readonly sessionId: string
-  readonly questions: readonly { question?: string }[]
+  /** Target trigger: questions/plan-reviews map to `question`, approvals to `approval`. */
+  readonly kind: 'question' | 'approval'
+  /** Ready-to-show notification body for this interaction. */
+  readonly body: string
 }
 
 /**
  * Diff a pending-interactions snapshot against the already-handled keys:
  * every not-yet-seen key is reported for marking, and among those, entries of
- * the question domains (`question` / `plan-review`) become notification
- * candidates. Unknown kinds are marked seen without firing — a later snapshot
- * must never re-deliver them. Keys absent from the previous run re-fire only
- * on a genuinely new key.
+ * the question domains (`question` / `plan-review`) or the approval domain
+ * (`approval`) become notification candidates. Unknown kinds are marked seen
+ * without firing — a later snapshot must never re-deliver them. Keys absent
+ * from the previous run re-fire only on a genuinely new key.
  * @param seen - keys already handled (index seeds this from the startup snapshot).
  * @param snapshot - the current pending-interactions map (keyed by session id).
- * @returns keys to mark seen and the question notifications to fire.
+ * @returns keys to mark seen and the notifications to fire.
  */
-export function pendingQuestionNotifications(
+export function pendingInteractionNotifications(
   seen: ReadonlySet<string>,
   snapshot: ReadonlyMap<string, PendingInteractionShape>,
-): { keys: string[]; fired: PendingQuestionFire[] } {
+): { keys: string[]; fired: PendingInteractionFire[] } {
   const keys: string[] = []
-  const fired: PendingQuestionFire[] = []
+  const fired: PendingInteractionFire[] = []
   for (const interaction of snapshot.values()) {
     if (seen.has(interaction.key)) continue
     keys.push(interaction.key)
-    if (interaction.kind !== 'question' && interaction.kind !== 'plan-review') continue
-    fired.push({ sessionId: interaction.sessionId, questions: interaction.questions ?? [] })
+    if (interaction.kind === 'question' || interaction.kind === 'plan-review') {
+      fired.push({ sessionId: interaction.sessionId, kind: 'question', body: questionBody(interaction.questions ?? []) })
+    } else if (interaction.kind === 'approval') {
+      fired.push({ sessionId: interaction.sessionId, kind: 'approval', body: approvalBody(interaction) })
+    }
   }
   return { keys, fired }
 }

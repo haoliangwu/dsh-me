@@ -1,29 +1,30 @@
 /**
  * Web dsh-ui-notification, browser half: desktop notifications when a
- * mirrored session errors, completes (max-tokens included), or the agent
- * asks a question — only while the document is hidden. Config toggles are
- * fetched once from the host half through the Connection RPC channel
- * `/notification` endpoint `config`; the browser Notification API fires with
- * permission requested lazily on the first eligible trigger.
+ * mirrored session errors, completes (max-tokens included), the agent asks a
+ * question, or a tool permission approval is pending — only while the
+ * document is hidden. Config toggles are fetched once from the host half
+ * through the Connection RPC channel `/notification` endpoint `config`; the
+ * browser Notification API fires with permission requested lazily on the
+ * first eligible trigger.
  *
  * Completion/error: every Session in the mirrored list is watched through
  * `ctx.sessions.binding(id).eventSource`; `append` changes are scanned for
- * `turn/end`, whose reason maps to an outcome per spec. Question: the
- * shipped answerer claims the `user-questions/request` waterfall before
- * profile plugins load, so the trigger is read from `ctx.uiSession
- * .sessionStatus` instead — 0.1.7's pending-interaction face, a per-session
- * row publishing the highest-precedence pending interaction; new question
- * entries fire, entries already pending at plugin start are seeded seen
- * without re-notifying, unknown domains are marked seen without firing.
+ * `turn/end`, whose reason maps to an outcome per spec. Question/approval:
+ * the shipped answerers claim the `user-questions/request` and
+ * `approval/request` waterfalls before profile plugins load, so the trigger
+ * is read from `ctx.uiSession.sessionStatus` instead — 0.1.7's
+ * pending-interaction face, a per-session row publishing the
+ * highest-precedence pending interaction; new question and approval entries
+ * fire, entries already pending at plugin start are seeded seen without
+ * re-notifying, unknown domains are marked seen without firing.
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
 import {
   assistantTurnText,
   bodyForTurnEnd,
-  pendingQuestionNotifications,
+  pendingInteractionNotifications,
   playChime,
-  questionBody,
   shouldNotify,
   titleFor,
   turnEndOutcome,
@@ -45,6 +46,7 @@ interface ConfigResponse {
   readonly notifyCompletion: boolean
   readonly notifyError: boolean
   readonly notifyQuestion: boolean
+  readonly notifyApproval: boolean
   /** Play the synthesized chime instead of the OS default sound. */
   readonly notifySound: boolean
 }
@@ -54,6 +56,7 @@ const DEFAULT_CONFIG: ConfigResponse = {
   notifyCompletion: true,
   notifyError: true,
   notifyQuestion: true,
+  notifyApproval: true,
   notifySound: true,
 }
 
@@ -110,12 +113,14 @@ export function apply(ctx: ClientContext): void {
           notifyCompletion: result.value.notifyCompletion ?? config.notifyCompletion,
           notifyError: result.value.notifyError ?? config.notifyError,
           notifyQuestion: result.value.notifyQuestion ?? config.notifyQuestion,
+          notifyApproval: result.value.notifyApproval ?? config.notifyApproval,
           notifySound: result.value.notifySound ?? config.notifySound,
         }
       }
     } catch (error) {
       logger.warn('dsh-ui-notification: config fetch failed, using defaults', error)
     }
+    return () => {}
   }, 'dsh-ui-notification: fetch config')
 
   // Lazy permission: requested once on the first eligible trigger; denied or
@@ -175,9 +180,10 @@ export function apply(ctx: ClientContext): void {
     return dispose
   }, 'dsh-ui-notification: watch mirrored sessions')
 
-  // ── question trigger: sessionStatus (shipped answerer claims the
-  // ── user-questions/request waterfall before profile plugins load and
-  // ── publishes each PendingQuestion as its session's pendingInteraction) ──
+  // ── question/approval trigger: sessionStatus (shipped answerers claim the
+  // ── user-questions/request and approval/request waterfalls before profile
+  // ── plugins load and publish each pending question/approval as its
+  // ── session's pendingInteraction) ───────────────────────────────────────
   let seenKeys: ReadonlySet<string> = new Set()
   const pendingInteractionsOf = (snapshot: ReadonlyMap<string, SessionStatusRowShape>): ReadonlyMap<string, PendingInteractionShape> => {
     const interactions = new Map<string, PendingInteractionShape>()
@@ -188,21 +194,23 @@ export function apply(ctx: ClientContext): void {
     }
     return interactions
   }
-  const reconcileQuestions = (): void => {
-    const { keys, fired } = pendingQuestionNotifications(seenKeys, pendingInteractionsOf(scoped.uiSession.sessionStatus.getSnapshot()))
+  const reconcileInteractions = (): void => {
+    const { keys, fired } = pendingInteractionNotifications(seenKeys, pendingInteractionsOf(scoped.uiSession.sessionStatus.getSnapshot()))
     if (keys.length > 0) seenKeys = new Set([...seenKeys, ...keys])
     for (const item of fired) {
-      if (!shouldNotify(document.visibilityState, config.notifyQuestion)) continue
-      notify(titleFor('question', sessionName(item.sessionId)), questionBody(item.questions))
+      const enabled = item.kind === 'approval' ? config.notifyApproval : config.notifyQuestion
+      if (!shouldNotify(document.visibilityState, enabled)) continue
+      notify(titleFor(item.kind, sessionName(item.sessionId)), item.body)
     }
   }
   ctx.effect(() => {
-    // Seed the seen-set from the initial snapshot without notifying: a
-    // question already pending before plugin load (HMR/reconnect re-delivery)
-    // must not re-fire; a fresh page load legitimately re-notifies it.
+    // Seed the seen-set from the initial snapshot without notifying: an
+    // interaction already pending before plugin load (HMR/reconnect
+    // re-delivery) must not re-fire; a fresh page load legitimately
+    // re-notifies it.
     const initial = pendingInteractionsOf(scoped.uiSession.sessionStatus.getSnapshot())
     seenKeys = new Set([...initial.values()].map(interaction => interaction.key))
-    const dispose = scoped.uiSession.sessionStatus.subscribe(reconcileQuestions)
+    const dispose = scoped.uiSession.sessionStatus.subscribe(reconcileInteractions)
     return dispose
   }, 'dsh-ui-notification: watch pending interactions')
 
