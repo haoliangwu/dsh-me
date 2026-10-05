@@ -34,4 +34,8 @@ bash：需要写入 /tmp/x           ← 正文 = 申请工具名 + 审批原因
 
 ## 细节
 
-纯 client 检测，不动 host。完成/错误挂在 `turn/end` 事件（`completed`/`max-tokens`→完成，`error`→错误，`aborted`/`blocked`/`interrupted` 跳过）；提问/审批观察 `uiSession.sessionStatus`（平台 answerer 先注册并 claim `user-questions/request` 与 `approval/request` waterfall，后注册的观察者收不到，所以走 0.1.7 的 pending-interaction face：每会话状态行的 `pendingInteraction`，`PendingQuestion` kind `question` / `PendingApproval` kind `approval`）。正文截断按 UTF-16 code point 计算不切 surrogate 对。Web Audio 用模块级懒加载 `AudioContext`，`resume()` 兼容 autoplay 策略，失败静默。
+纯 client 检测，host 只做两件事：RPC 返回开关、desktop 代发原生通知。完成/错误挂在 `turn/end` 事件（`completed`/`max-tokens`→完成，`error`→错误，`aborted`/`blocked`/`interrupted` 跳过）；提问/审批观察 `uiSession.sessionStatus`（平台 answerer 先注册并 claim `user-questions/request` 与 `approval/request` waterfall，后注册的观察者收不到，所以走 0.1.7 的 pending-interaction face：每会话状态行的 `pendingInteraction`，`PendingQuestion` kind `question` / `PendingApproval` kind `approval`）。
+
+**桌面 (Electron) 通道**：桌面壳里渲染进程的 HTML5 `new Notification()` 不弹 macOS 通知（壳主进程才有原生 `Notification`，且无 IPC 桥），所以 client 在非 http 协议（`dsh-*://`）下把每条通知 POST 到 host `/notification` 端点 `notify`，host 用 `osascript display notification` 弹原生横幅；提示音仍在渲染进程播 Web Audio 双音。浏览器 profile（web）不受影响，走渲染进程 Notification API。macOS 通知正文上限 256 字节，host 先把标题/正文截断到 48/192 字符再交系统（超出部分系统再截断）。
+
+正文截断按 UTF-16 code point 计算不切 surrogate 对。Web Audio 用模块级懒加载 `AudioContext`，`resume()` 兼容 autoplay 策略，失败静默。

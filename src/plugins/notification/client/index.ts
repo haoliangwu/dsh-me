@@ -17,6 +17,12 @@
  * highest-precedence pending interaction; new question and approval entries
  * fire, entries already pending at plugin start are seeded seen without
  * re-notifying, unknown domains are marked seen without firing.
+ *
+ * Desktop shell: the Electron renderer's HTML5 Notification API creates no
+ * OS bubble there, so a non-http origin routes every notification through
+ * the host half (`/notification` endpoint `notify`), which shows it with a
+ * native `osascript display notification`; the synthesized chime still plays
+ * in the renderer. Browser profiles keep the renderer Notification API.
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
@@ -40,6 +46,18 @@ const CHANNEL = '/notification'
 
 /** Endpoint under {@link CHANNEL} returning the configured trigger toggles. */
 const ENDPOINT_CONFIG = 'config'
+
+/** Endpoint under {@link CHANNEL} showing one native desktop notification. */
+const ENDPOINT_NOTIFY = 'notify'
+
+/**
+ * Whether this page runs in the Electron desktop shell: its window loads a
+ * custom protocol (`dsh-*://`), while browser profiles load over http(s).
+ * @returns true inside the desktop app, false in a browser profile.
+ */
+export function isDesktopShell(): boolean {
+  return typeof location !== 'undefined' && !location.protocol.startsWith('http')
+}
 
 /** Host response payload for {@link ENDPOINT_CONFIG}. */
 interface ConfigResponse {
@@ -124,9 +142,19 @@ export function apply(ctx: ClientContext): void {
   }, 'dsh-ui-notification: fetch config')
 
   // Lazy permission: requested once on the first eligible trigger; denied or
-  // unsupported stays silent forever after (spec).
+  // unsupported stays silent forever after (spec). The desktop shell instead
+  // routes the bubble through the host (`osascript`), so no renderer
+  // permission is ever requested there.
+  const desktop = isDesktopShell()
   let permission: 'unrequested' | 'requesting' | 'granted' | 'denied' = 'unrequested'
   const notify: NotifyFn = (title, body) => {
+    if (desktop) {
+      if (config.notifySound) chimeSound()
+      void scoped.connection.rpc.call(CHANNEL, ENDPOINT_NOTIFY, { title, body }).catch((error) => {
+        logger.warn('dsh-ui-notification: desktop native notify failed', error)
+      })
+      return
+    }
     void notifyWithApi(title, body, config.notifySound, () => permission, state => { permission = state })
   }
 
