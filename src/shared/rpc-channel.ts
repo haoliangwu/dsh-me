@@ -20,16 +20,17 @@
  * rejects with 401/403 before the envelope (rpc-host.ts). That fence
  * (trustedHosts + browser auth) is unreachable from profile fibers.
  *
- * Origins are deliberately NOT matched against Host: the official fence binds
- * Host only (api-request-trust.ts — "Host is the one header rebinding cannot
- * forge"), and the Desktop surface loads from a custom-scheme origin
- * (`dsh-*://app/`), which a same-origin check would 403 on every request.
- * This module keeps a Host sanity check (a malformed or absent authority is
- * refused) and leaves the trustworthy-origin/auth decision to the connection
- * service once the profile tree can reach it.
+ * This module layers two guards instead. Host sanity first: a malformed or
+ * absent authority is refused with 400. Then an Origin gate: a scripted
+ * cross-site POST is refused with 403, while the Desktop surface — which
+ * loads from a custom-scheme origin (`dsh-*://app/`) and often sends no
+ * Origin at all — keeps working. The browser already blocks the non-simple
+ * JSON POST via CORS preflight, so the Origin gate is defense-in-depth for
+ * clients that skip it (native callers, misbehaving proxies); Host remains
+ * the header rebinding cannot forge.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
+import type { RpcResult } from './rpc-types.ts'
 
 /** One channel endpoint handler; identical to connection's ConnectionRpcHandler. */
 export type RpcChannelHandler = (
@@ -84,6 +85,11 @@ export async function serveRpcChannel(
   if (!hasAuthoritativeHost(req)) {
     res.writeHead(400)
     res.end('missing or malformed host header')
+    return
+  }
+  if (!originAllowed(req.headers.origin, req.headers.host)) {
+    res.writeHead(403)
+    res.end('cross-origin request rejected')
     return
   }
   let body: unknown
@@ -159,4 +165,28 @@ function hasAuthoritativeHost(req: IncomingMessage): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * Cross-origin gate for channel routes: refuse a scripted cross-site POST
+ * while keeping the Desktop custom-scheme origin working.
+ * - No Origin header → accepted (some non-browser clients send none; Host
+ *   sanity already ran).
+ * - Non-http(s) Origin (`dsh-app://…`) → accepted (Desktop surface).
+ * - http(s) Origin → accepted only when it matches the Host authority.
+ * @param origin - the request Origin header, or undefined when absent.
+ * @param host - the request Host header, or undefined when absent.
+ * @returns whether the request may proceed.
+ */
+export function originAllowed(origin: string | undefined, host: string | undefined): boolean {
+  if (origin === undefined) return true
+  let parsed: URL
+  try {
+    parsed = new URL(origin)
+  } catch {
+    return false
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return true
+  if (host === undefined) return false
+  return parsed.host === host
 }
