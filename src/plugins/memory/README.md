@@ -49,7 +49,7 @@ memory_forget id=3                                          # 按 id 删除（id
 
 命令注册走 `ctx.inject(['commands'])` 子挂载（plan-mode 同款）：没有命令注册表的组合（ACP、headless 主干）照常挂载存储/收割/工具，只是不注册该命令；命令结果文本只进 UI，不进模型历史，模型看到的是那条被 steer 的 prompt 消息。
 
-**整理后自动同步注入上下文。** 注入的 memory 行平时是 epoch-pinned 的（store 在两次 compaction 之间的变化不换行，等 compaction 边界），但 `/memory-tidy` 本身就是对 store 的一次改写——指令会在该会话标记 pending-sync，一旦 assemble 出的块相对已注入行 digest 发生变化（agent 用工具实际改动后），下一个 `agent/pre-step` 就立即原位替换记忆行，无需等 compaction；标志在替换发生或回合关闭（`agent/turn-stopping`）时清除，避免泄漏到后续无关写入破坏 pinning。其它会话不受影响，仍各自钉住自己的行。
+**forget → 注入行即时同步。** 注入的 memory 行平时是 epoch-pinned 的（store 在两次 compaction 之间的变化不换行，等 compaction 边界），但 `memory_forget` 删掉的字节在会话里没有其它可见副本——`tools.ts` 在删除成功时通过 `onForget` hook 把**调用会话**的 pin 失效（`index.ts` 的 `pendingRefresh`），下一个 `agent/pre-step` 就立即原位替换记忆行，已删内容消失、外部新累积（如其它会话写入的 `#73`）进来；标志在替换发生时消费、会话销毁时清理。**只 forget 触发，memory_write 不触发**：写入内容已呈现在会话表面（工具结果），注入回显=冗余（自有写入的 epoch-pin 语义是刻意的）。`/memory-tidy` 的三个操作（合并/移除/重写）都含 forget，全覆盖；且 hook 由工具触发，天然免疫「指令置位后被无关 digest 差异提前消费」的竞态。其它会话不受影响，仍各自钉住自己的行。
 
 ## Memory Tab（会话头部只读可视化）
 

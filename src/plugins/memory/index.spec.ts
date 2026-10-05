@@ -803,7 +803,7 @@ describe('memory-tidy command', () => {
   })
 })
 
-describe('memory-tidy sync (post-reorg injected-row refresh)', () => {
+describe('memory_forget pin drop (deleted bytes leave the injected row)', () => {
   beforeEach(() => {
     process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-memory-test-'))
   })
@@ -812,69 +812,68 @@ describe('memory-tidy sync (post-reorg injected-row refresh)', () => {
     delete process.env.DSH_HOME
   })
 
-  /** A surfaced memory row whose block the store does not yet reflect (no compaction after the row, so the mid-epoch pin would normally hold). */
-  function staleSession(): FakeSession {
-    const oldBlock = '## Project Memory\n<project-memory>\n<note id="1" scope="workspace">old fact</note>\n</project-memory>'
-    return fakeSession('/work/a', 's1', [memoryRow(messageText(oldBlock))])
-  }
-
-  /** Run the command handler exactly like the UI does (steer ignored here: the agent + its tools are driven by the test directly). */
-  async function armTidy(mounted: Mounted): Promise<void> {
-    const command = mounted.commands[0]
-    if (command === undefined) throw new Error('memory-tidy not registered')
-    await command.handler({
-      agent: { session: { id: 's1', header: { cwd: '/work/a' } }, steer: vi.fn() },
-      rawInput: '',
-      signal: new AbortController().signal,
-    })
-  }
-
-  it('replaces the pinned row in place once the armed session\'s store changed', async () => {
+  it('drops the calling session\'s pin: the next pre-step splices the re-assembled row in place', async () => {
     const mounted = mount()
-    const session = staleSession()
-    await mounted.executes('memory_write', { content: 'new fact' }, { agent: { id: 's1', session } })
-    await armTidy(mounted)
+    const session = fakeSession()
+    await mounted.executes('memory_write', { content: 'alpha fact' }, { agent: { id: 's1', session } })
+    await mounted.executes('memory_write', { content: 'beta fact' }, { agent: { id: 's1', session } })
+    // First injection: the harness persists the decision message as the row
+    // (no compaction after it, so a mid-epoch pin would normally hold).
+    const first = await mounted.prestep(session)
+    const memory = injectedMemoryMessage(first)
+    expect(memory).toBeDefined()
+    if (memory !== undefined) persistMemoryRow(session, memory)
+    // Mid-epoch forget: the deleted bytes must leave the injected block at
+    // the next pre-step, not at the next compaction.
+    expect(await mounted.executes('memory_forget', { id: 1 }, { agent: { id: 's1', session } })).toEqual({ deleted: true })
     const decision = await mounted.prestep(session)
     expect(injectedMemoryMessage(decision)).toBeUndefined()
-    expect(session.appends).toHaveLength(1)
-    const append = session.appends[0]
+    // The row itself (persisted above) plus the in-place replace.
+    expect(session.appends).toHaveLength(2)
+    const append = session.appends[1]
     expect(append?.type).toBe('user/message')
     const opts = append?.opts as { surfaceOp: { op: string; startSeq: number; endSeq: number }; sourceEventSeqs: number[] }
     expect(opts.surfaceOp).toEqual({ op: 'replace', startSeq: 0, endSeq: 0 })
     expect(opts.sourceEventSeqs).toEqual([0])
-    const data = append?.data as UserMessage
-    expect((data.content[0] as { text: string }).text).toContain('new fact')
-    // The sync is consumed: a later pre-step is a byte-stable no-op again.
+    const text = (append?.data as UserMessage).content[0] as { text: string }
+    expect(text.text).toContain('beta fact')
+    expect(text.text).not.toContain('alpha fact')
+    // The drop is consumed: a later pre-step is a byte-stable no-op again.
     expect(await mounted.prestep(session)).toEqual(downstreamDecision())
-    expect(session.appends).toHaveLength(1)
+    expect(session.appends).toHaveLength(2)
   })
 
-  it('stays armed across unchanged pre-steps (tidy step 1) and refreshes on the first change (tidy step 2)', async () => {
+  it('leaves the pin alone when a losing session forgets a workspace memory (refreshes only the caller)', async () => {
     const mounted = mount()
-    const session = staleSession()
-    await armTidy(mounted)
-    // Pre-step before the tools ran: the digest still matches the surfaced
-    // row, nothing replaces, and the flag stays armed for the post-tool step.
-    expect(await mounted.prestep(session)).toEqual(downstreamDecision())
-    expect(session.appends).toEqual([])
-    // The reorg writes land, then the post-tool pre-step splices the row.
-    await mounted.executes('memory_write', { content: 'new fact' }, { agent: { id: 's1', session } })
-    const decision = await mounted.prestep(session)
-    expect(session.appends).toHaveLength(1)
-    const opts = session.appends[0]?.opts as { surfaceOp: { op: string } }
-    expect(opts.surfaceOp.op).toBe('replace')
+    const caller = fakeSession('/work/a', 's1')
+    const sibling = fakeSession('/work/a', 's2')
+    await mounted.executes('memory_write', { content: 'alpha fact' }, { agent: { id: 's1', session: caller } })
+    await mounted.executes('memory_write', { content: 'beta fact' }, { agent: { id: 's1', session: caller } })
+    const first = await mounted.prestep(caller)
+    const memory = injectedMemoryMessage(first)
+    expect(memory).toBeDefined()
+    if (memory !== undefined) persistMemoryRow(caller, memory)
+    // The sibling deletes the workspace memory: only the sibling's pin drops
+    // (it has no row yet); the caller's row stays pinned mid-epoch.
+    expect(await mounted.executes('memory_forget', { id: 1 }, { agent: { id: 's2', session: sibling } })).toEqual({ deleted: true })
+    const decision = await mounted.prestep(caller)
+    expect(decision).toEqual(downstreamDecision())
+    expect(caller.appends).toHaveLength(1)
   })
 
-  it('clears the armed sync when the tidy turn closes without a change (no leak into later writes)', async () => {
+  it('does not drop the pin on preference alone: a mid-epoch memory_write stays pinned (own-write echo)', async () => {
     const mounted = mount()
-    const session = staleSession()
-    await armTidy(mounted)
-    // The reorg turn ends having changed nothing: the flag must not force an
-    // immediate replace on some unrelated future write.
-    await mounted.fire('agent/turn-stopping', { agent: { session: { id: 's1' } } })
-    await mounted.executes('memory_write', { content: 'new fact' }, { agent: { id: 's1', session } })
+    const session = fakeSession()
+    await mounted.executes('memory_write', { content: 'alpha fact' }, { agent: { id: 's1', session } })
+    const first = await mounted.prestep(session)
+    const memory = injectedMemoryMessage(first)
+    expect(memory).toBeDefined()
+    if (memory !== undefined) persistMemoryRow(session, memory)
+    // The existing pin test owns the no-op assertion; here the point is that
+    // the write alone must NOT arm the refresh.
+    await mounted.executes('memory_write', { content: 'beta fact' }, { agent: { id: 's1', session } })
     expect(await mounted.prestep(session)).toEqual(downstreamDecision())
-    expect(session.appends).toEqual([])
+    expect(session.appends).toHaveLength(1)
   })
 })
 
