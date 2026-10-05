@@ -47,7 +47,7 @@ describe('apply', () => {
     const ctx = fakeCtx(initiator)
     const { calls, restore } = captureFetch()
     cleanups.push(restore)
-    apply(ctx as never)
+    apply(ctx as never, {})
     cleanups.push(ctx.dispose)
     return { ctx, calls }
   }
@@ -94,7 +94,7 @@ describe('apply', () => {
     const ctx = fakeCtx({ id: 's' })
     const { restore } = captureFetch()
     cleanups.push(restore)
-    apply(ctx as never)
+    apply(ctx as never, {})
     const patched = globalThis.fetch
     ctx.dispose()
     expect(globalThis.fetch).not.toBe(patched)

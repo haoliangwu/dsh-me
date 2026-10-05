@@ -15,6 +15,7 @@
  * outside any initiator boundary share the stable fallback id.
  */
 import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 
 /** Cordis plugin name. */
 export const name = 'x-opencode-session-shim'
@@ -48,8 +49,18 @@ export function sessionValueFor(currentInitiator: () => { id: string } | undefin
   }
 }
 
+/** Plugin config: header tracing (default silent; deployment option, not env). */
+export interface Config {
+  /** Log every stamped `${HEADER_NAME}` value (default: false). */
+  trace?: boolean
+}
+
+export const Config = z.object({
+  trace: z.boolean().default(false),
+})
+
 /** Install the fetch patch; disposal restores the original fetch. */
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config: Config): void {
   const original = globalThis.fetch
   const patched: typeof fetch = (input, init) => {
     const url = requestUrl(input)
@@ -60,9 +71,9 @@ export function apply(ctx: Context): void {
       for (const [key, value] of input.headers) headers.set(key, value)
     }
     headers.set(HEADER_NAME, session)
-    // Opt-in trace (default silent): set DSH_X_OPENCODE_SESSION_SHIM_TRACE=1
-    // to see the header each request actually carried to the gateway.
-    if (process.env.DSH_X_OPENCODE_SESSION_SHIM_TRACE === '1') {
+    // Opt-in trace (default silent): see the header each request actually
+    // carried to the gateway (deployment Config, not an env seam).
+    if (config.trace === true) {
       console.info(`[x-opencode-session-shim] opencode-go: ${HEADER_NAME}: ${session}`)
     }
     if (init === undefined && input instanceof Request) {
