@@ -15,7 +15,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import {
   MESSAGE_SOURCE_KIND,
   assistantTextOfTurn,
@@ -29,6 +29,22 @@ import {
   type TargetLike,
   type TurnEndReasonShape,
 } from './decision.ts'
+
+// Durable attribution for a relayed message, declared into the platform's
+// merge-extensible source map (the same mechanism @deepseek-ai/dsh-subagent
+// uses for its agent-message relay sources): the session log can rebuild the
+// sender from `senderSessionId` and path the message as a `relay` form, while
+// the extra `hop` field carries the plugin's chain-depth gate.
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'session-messenger': {
+      readonly kind: 'session-messenger'
+      readonly form: 'relay'
+      readonly senderSessionId: string
+      readonly hop: number
+    }
+  }
+}
 
 /** Cordis plugin name. */
 export const name = 'dsh-session-messenger'
@@ -54,7 +70,12 @@ interface RelayMessage {
   readonly id: string
   readonly role: 'user'
   readonly content: readonly { type: 'text'; text: string }[]
-  readonly source: { readonly kind: typeof MESSAGE_SOURCE_KIND; readonly hop: number }
+  readonly source: {
+    readonly kind: 'session-messenger'
+    readonly form: 'relay'
+    readonly senderSessionId: string
+    readonly hop: number
+  }
 }
 
 /** Structural host Session (title fold + cwd + event log). */
@@ -101,12 +122,12 @@ function messageId(): string {
 }
 
 /** Build one relay user message with the plugin's source kind and chain hop. */
-function relayMessageFor(body: string, hop: number): RelayMessage {
+function relayMessageFor(body: string, hop: number, senderSessionId: string): RelayMessage {
   return {
     id: messageId(),
     role: 'user',
     content: [{ type: 'text', text: body }],
-    source: { kind: MESSAGE_SOURCE_KIND, hop },
+    source: { kind: MESSAGE_SOURCE_KIND, form: 'relay', senderSessionId, hop },
   }
 }
 
@@ -168,7 +189,7 @@ export function apply(ctx: Context, config: Config): void {
       ctx.logger.info(`[session-messenger] sender ${watch.senderId} not live; reply skipped`)
       return
     }
-    const message = relayMessageFor(plan.body, plan.hop)
+    const message = relayMessageFor(plan.body, plan.hop, watch.senderId)
     if (config.autoWake !== false) {
       sender.followup(message)
     } else {
@@ -178,23 +199,31 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
   ctx.on('session/event', (session, event) => {
-    if (event.type === 'user/message') {
-      const id = (event.data as { id?: unknown } | undefined)?.id
-      if (typeof id !== 'string') return
-      const watch = watches.get(id)
-      if (watch !== undefined) watch.seen = true
-      return
+    try {
+      if (event.type === 'user/message') {
+        const id = (event.data as { id?: unknown } | undefined)?.id
+        if (typeof id !== 'string') return
+        const watch = watches.get(id)
+        if (watch !== undefined) watch.seen = true
+        return
+      }
+      if (event.type !== 'turn/end') return
+      const data = event.data as { turn?: unknown; reason?: TurnEndReasonShape } | undefined
+      if (data === undefined || typeof data.turn !== 'number' || data.reason === undefined) return
+      // Only turns that claimed one of our delivered relays flip `seen`; human
+      // turns never trigger a reply. The relay message is the sole ordinary
+      // message of its own turn, so at most one watch can be seen per turn.
+      const watch = [...watches.values()].find(candidate => candidate.targetId === session.id && candidate.seen)
+      if (watch === undefined) return
+      watches.delete(watch.messageId)
+      deliverReply(watch, session, data.turn, data.reason)
+    } catch (error) {
+      // session/event dispatch is serialized and a thrown listener rejects the
+      // whole carrier, taking every other listener down with it. Reply routing
+      // is best-effort background work: contain it, keep the watch for the
+      // next turn/end retry.
+      ctx.logger.warn(`[session-messenger] reply routing failed: ${error instanceof Error ? error.message : String(error)}`)
     }
-    if (event.type !== 'turn/end') return
-    const data = event.data as { turn?: unknown; reason?: TurnEndReasonShape } | undefined
-    if (data === undefined || typeof data.turn !== 'number' || data.reason === undefined) return
-    // Only turns that claimed one of our delivered relays flip `seen`; human
-    // turns never trigger a reply. The relay message is the sole ordinary
-    // message of its own turn, so at most one watch can be seen per turn.
-    const watch = [...watches.values()].find(candidate => candidate.targetId === session.id && candidate.seen)
-    if (watch === undefined) return
-    watches.delete(watch.messageId)
-    deliverReply(watch, session, data.turn, data.reason)
   })
   // Drop watches whose relay target was disposed before the relay was claimed;
   // listener teardown on plugin unload covers the rest (effect-scoped, no leaks).
@@ -238,8 +267,8 @@ export function apply(ctx: Context, config: Config): void {
         text: JSON.stringify(value.sessions),
       }],
     },
-    async execute(_args: Record<string, never>, exec: { agent?: AgentLike; signal?: AbortSignal }) {
-      const caller = exec.agent
+    async execute(_args: Record<string, never>, exec: ToolRunContext) {
+      const caller = exec.agent as AgentLike | undefined
       if (caller === undefined) {
         throw new Error('list_sessions 需要调用方 agent（exec.agent 为空）')
       }
@@ -281,8 +310,8 @@ export function apply(ctx: Context, config: Config): void {
         text: value.delivered ? `已投递到会话 ${value.sessionId}` : '投递未完成',
       }],
     },
-    async execute(args: { to: string; text: string }, exec: { agent?: AgentLike; signal?: AbortSignal }) {
-      const caller = exec.agent
+    async execute(args: { to: string; text: string }, exec: ToolRunContext) {
+      const caller = exec.agent as AgentLike | undefined
       if (caller === undefined) {
         throw new Error('relay_message 需要调用方 agent（exec.agent 为空）')
       }
@@ -311,7 +340,7 @@ export function apply(ctx: Context, config: Config): void {
       if (target === undefined) {
         throw new Error(`目标会话 ${plan.targetId} 无存活 agent（无法开回合），请稍后重试`)
       }
-      const message = relayMessageFor(plan.body, plan.hop)
+      const message = relayMessageFor(plan.body, plan.hop, caller.id)
       // next-turn inbox + wake: an idle target starts a turn, a busy target
       // queues and consumes the message after its current turn (spec).
       target.followup(message)

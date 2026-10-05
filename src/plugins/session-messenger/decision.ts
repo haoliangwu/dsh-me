@@ -107,10 +107,10 @@ export interface CatalogCandidateLike {
  * @param cwd - the calling session's cwd.
  * @returns the same-workspace subset.
  */
-export function sameWorkspace(
-  candidates: readonly CatalogCandidateLike[],
+export function sameWorkspace<T extends CatalogCandidateLike>(
+  candidates: readonly T[],
   cwd: string | undefined,
-): readonly CatalogCandidateLike[] {
+): readonly T[] {
   return candidates.filter(candidate => candidate.header.cwd === cwd)
 }
 
@@ -136,7 +136,7 @@ export interface CatalogRow {
  * @param entries - same-workspace sessions with running flags.
  * @returns the tool's catalog rows.
  */
-export function deliveryCatalog(entries: readonly CatalogSessionEntry[]): readonly CatalogRow[] {
+export function deliveryCatalog(entries: readonly CatalogSessionEntry[]): CatalogRow[] {
   return entries.map(entry => ({
     sessionId: entry.sessionId,
     title: entry.title ?? '',
@@ -226,6 +226,8 @@ export function planDelivery(input: DeliveryPlanInput): DeliveryPlan {
 /** The reason payload of a durable `turn/end` event (structural). */
 export interface TurnEndReasonShape {
   readonly kind: string
+  /** Internal cause carried by `aborted` reasons (user/parent/hook/disposed/legacy). */
+  readonly reason?: { readonly kind?: string }
   readonly error?: { readonly message?: string }
 }
 
