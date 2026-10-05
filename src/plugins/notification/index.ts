@@ -158,26 +158,25 @@ function dispatchNativeNotify(payload: unknown, ctx: Context, bundleId: string):
     return Promise.resolve({ ok: false as const, error: { code: 'unsupported', message: 'native notification unavailable on this platform', details: {} } })
   }
   return new Promise((resolve) => {
-    // terminal-notifier: click activates the bundle. ENOENT falls back to
-    // osascript (click then opens Script Editor — a documented limitation).
-    execFile('terminal-notifier', ['-title', title, '-message', body, '-activate', bundleId, '-sender', bundleId], (error) => {
-      if (error && (error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        ctx.logger.warn('dsh-ui-notification: terminal-notifier failed', error)
-        resolve({ ok: false as const, error: { code: 'internal', message: 'terminal-notifier failed to show the notification', details: {} } })
+    // terminal-notifier: click activates the bundle. Any failure (missing
+    // binary, missing notification permission, sandbox denial) falls back to
+    // osascript so a click-to-focus regression never takes the bubble away —
+    // osascript needs no authorization and clicks open Script Editor (the
+    // documented trade-off).
+    execFile('terminal-notifier', ['-title', title, '-message', body, '-activate', bundleId], (error) => {
+      if (!error) {
+        resolve({ ok: true as const, value: { delivered: true } })
         return
       }
-      if (error) {
-        execFile('osascript', ['-e', buildOsascriptScript(title, body)], (osError, _stdout, stderr) => {
-          if (osError) {
-            ctx.logger.warn('dsh-ui-notification: osascript failed', osError, stderr)
-            resolve({ ok: false as const, error: { code: 'internal', message: 'osascript failed to show the notification', details: {} } })
-            return
-          }
-          resolve({ ok: true as const, value: { delivered: true } })
-        })
-        return
-      }
-      resolve({ ok: true as const, value: { delivered: true } })
+      ctx.logger.warn('dsh-ui-notification: terminal-notifier failed, falling back to osascript', error)
+      execFile('osascript', ['-e', buildOsascriptScript(title, body)], (osError, _stdout, stderr) => {
+        if (osError) {
+          ctx.logger.warn('dsh-ui-notification: osascript failed', osError, stderr)
+          resolve({ ok: false as const, error: { code: 'internal', message: 'osascript failed to show the notification', details: {} } })
+          return
+        }
+        resolve({ ok: true as const, value: { delivered: true } })
+      })
     })
   })
 }
