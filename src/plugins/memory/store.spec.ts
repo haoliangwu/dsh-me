@@ -230,6 +230,24 @@ CREATE UNIQUE INDEX idx_unique_seq ON memories(workspace, source_event_seq);
     expect(store.deleteMemory(id, { workspace: WORKSPACE_A, sessionId: 's1' })).toBe(0)
   })
 
+  it('deleteMemory lets any caller delete a global row (visible everywhere, fence matches listActive)', () => {
+    const id = store.insertManual('global', { content: 'shared preference' })
+    expect(store.deleteMemory(id, { workspace: WORKSPACE_A, sessionId: 's1' })).toBe(1)
+    expect(store.listActive(WORKSPACE_A, 's1')).toEqual([])
+  })
+
+  it('deleteMemory fences session notes to their own session (own deletable, other refused)', () => {
+    // The tool path binds session notes to the caller's workspace key too
+    // (memory_write passes workspace for session scope); mirror that shape.
+    const mine = store.insertManual('session', { content: 'my note', sessionId: 's1', workspace: WORKSPACE_A })
+    const theirs = store.insertManual('session', { content: 'their note', sessionId: 's2', workspace: WORKSPACE_A })
+    // The owner deletes its own note...
+    expect(store.deleteMemory(mine, { workspace: WORKSPACE_A, sessionId: 's1' })).toBe(1)
+    // ...but never another session's note, even guessing the id.
+    expect(store.deleteMemory(theirs, { workspace: WORKSPACE_A, sessionId: 's1' })).toBe(0)
+    expect(store.listActive(WORKSPACE_A, 's2').map(r => r.content)).toContain('their note')
+  })
+
   it('deleteMemory refuses a row outside the caller\'s scope (guessed id cannot touch another pool)', () => {
     const id = store.insertManual('workspace', { content: 'other pool', workspace: WORKSPACE_B })
     expect(store.deleteMemory(id, { workspace: WORKSPACE_A, sessionId: 's1' })).toBe(0)

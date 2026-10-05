@@ -170,12 +170,7 @@ export class MemoryStore {
     let sql = `
 SELECT id, workspace, session_id, kind, content, heading, segment_index, source_event_seq, shadowed_event_seqs, superseded_by, created_at
 FROM memories
-WHERE superseded_by IS NULL AND (
-  workspace IS NULL
-  OR (kind = 'compaction' AND workspace = ?)
-  OR (kind = 'manual' AND session_id IS NULL AND workspace = ?)
-  OR (kind = 'manual' AND session_id = ?)
-)`
+WHERE ${VISIBILITY_WHERE}`
     const params: Array<string | null> = [workspace, workspace, sessionId]
     if (keyword !== undefined && keyword !== '') {
       sql += " AND content LIKE ? ESCAPE '\\'"
@@ -187,9 +182,10 @@ WHERE superseded_by IS NULL AND (
 
   /**
    * Delete one memory row visible to the caller, group-aware and scoped
-   * (memory_forget). The visibility fence is identical to listActive: a
-   * guessed id can never touch another pool (a foreign workspace's rows, or a
-   * session note of an invisible session). A compaction row deletes its WHOLE
+   * (memory_forget). The visibility fence is the shared VISIBILITY_WHERE —
+   * the exact scope listActive reads: a guessed id can never touch another
+   * pool (a foreign workspace's rows, or a session note of an invisible
+   * session). A compaction row deletes its WHOLE
    * checkpoint group (every segment sharing workspace + source_event_seq —
    * deleting a single segment would leave a beheaded checkpoint in the
    * injected block; superseded rows of the same group go with it). Once
@@ -200,15 +196,8 @@ WHERE superseded_by IS NULL AND (
    * @returns rows deleted (the whole group when the target was a checkpoint segment).
    */
   deleteMemory(id: number, scope: { workspace: string | null; sessionId: string | null }): number {
-    const visible = `
-AND superseded_by IS NULL AND (
-  workspace IS NULL
-  OR (kind = 'compaction' AND workspace = ?)
-  OR (kind = 'manual' AND session_id IS NULL AND workspace = ?)
-  OR (kind = 'manual' AND session_id = ?)
-)`
     const target = this.db.prepare(
-      `SELECT workspace AS w, kind AS k, source_event_seq AS seq FROM memories WHERE id = ?${visible}`,
+      `SELECT workspace AS w, kind AS k, source_event_seq AS seq FROM memories WHERE id = ? AND ${VISIBILITY_WHERE}`,
     ).get(id, scope.workspace, scope.workspace, scope.sessionId) as
       { w: string | null; k: string; seq: number | null } | undefined
     if (target === undefined) return 0
@@ -240,6 +229,21 @@ AND superseded_by IS NULL AND (
     return Number(result.changes)
   }
 }
+
+/**
+ * The active-row visibility fence shared by {@link MemoryStore.listActive} and
+ * {@link MemoryStore.deleteMemory} (one home — a scope-rule change touches
+ * this alone): rows visible to one workspace/session scope, superseded rows
+ * excluded. Global rows match everywhere; cwd-scoped manual and compaction
+ * rows match their workspace; session notes match only their own session.
+ * Parameter order: workspace, workspace, sessionId.
+ */
+const VISIBILITY_WHERE = ` superseded_by IS NULL AND (
+    workspace IS NULL
+    OR (kind = 'compaction' AND workspace = ?)
+    OR (kind = 'manual' AND session_id IS NULL AND workspace = ?)
+    OR (kind = 'manual' AND session_id = ?)
+  )`
 
 /** Escape LIKE wildcards (% / _) and the escape character itself, so a keyword matches literally (memory_list). */
 function escapeLikePattern(keyword: string): string {
