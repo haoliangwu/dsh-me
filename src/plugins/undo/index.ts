@@ -16,7 +16,7 @@
  * pagination are lossless.
  */
 import type { Context } from '@deepseek-ai/cordis'
-import type { ConnectionRpcFailure as RpcError, ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
+import type { RpcError, RpcResult } from '../../shared/rpc-types'
 import { serveRpcChannel } from '../../shared/rpc-channel.ts'
 import { Session, SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import type {
@@ -84,6 +84,8 @@ export interface AgentLike {
 export interface UndoHost {
   sessions: { get(id: SessionId): SessionLike | undefined }
   agents: { get(id: SessionId): AgentLike | undefined }
+  /** Logging sink supplied by the apply half (keeps service functions logger-free). */
+  logger: { warn(message: string, ...args: unknown[]): void }
 }
 
 /** The undo endpoint result. */
@@ -232,7 +234,7 @@ export async function performRedo(host: UndoHost, sessionId: string): Promise<Re
       // Even the recovery append failed; the session service owns the log.
     }
     const reason = error instanceof Error ? error.message : String(error)
-    console.error(`dsh-undo: redo failed mid-replay: ${reason}`)
+    host.logger.warn(`dsh-undo: redo failed mid-replay: ${reason}`)
     return internal(`dsh-undo/redo-failed: ${reason}`)
   }
   return { ok: true as const, value: { turn: tombstone.turn } }
@@ -299,6 +301,7 @@ export function apply(ctx: Context): void {
     // pre-existing); the runtime service is the real SessionStore.
     sessions: { get: id => (ctx.sessions as unknown as { get(id: SessionId): SessionLike | undefined }).get(id) },
     agents: { get: id => ctx.agents.get(id) },
+    logger: ctx.logger,
   }
   // Per-session serialization: the tail of the previous operation for the
   // same session gates the next one; an operation failure never poisons the

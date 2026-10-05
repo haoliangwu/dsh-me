@@ -123,6 +123,7 @@ function hostOf(session: Session | undefined, status: 'idle' | 'running' | 'abse
     agents: {
       get: id => (status === 'absent' ? undefined : { id, status }),
     },
+    logger: { warn: () => {} },
   }
 }
 

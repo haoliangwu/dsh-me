@@ -497,10 +497,12 @@ describe('dsh-undo spike: foreign replacement events in the turn range (§2.2 ap
   function hostOf(session: Session): {
     sessions: { get(id: SessionId): Session | undefined }
     agents: { get(id: SessionId): { id: SessionId; status: 'idle' } | undefined }
+    logger: { warn(...args: unknown[]): void }
   } {
     return {
       sessions: { get: id => (id === session.id ? session : undefined) },
       agents: { get: () => ({ id: session.id, status: 'idle' as const }) },
+      logger: { warn: () => {} },
     }
   }
 

@@ -30,7 +30,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { Context } from '@deepseek-ai/cordis'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
-import type { ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
+import type { RpcResult } from '../../shared/rpc-types'
 import { serveRpcChannel } from '../../shared/rpc-channel.ts'
 import { Session, SessionSeq } from '@deepseek-ai/dsh-session'
 import z from '@deepseek-ai/schemastery'
@@ -412,32 +412,32 @@ export function apply(ctx: Context, config: Config): void {
         kind: 'prefix',
         path: CHANNEL,
         handler: (req, res) => {
-        void serveRpcChannel(req, res, { channel: CHANNEL, logLabel: 'dsh-memory: /dsh-memory channel' }, (endpoint, payload) => {
-          if (endpoint !== ENDPOINT_BLOCK) {
-            return Promise.resolve({
-              ok: false as const,
-              error: { code: 'internal', message: `unknown endpoint ${endpoint}`, details: {} },
-            })
-          }
-          try {
-            const { sessionId, cwd } = (payload ?? {}) as { sessionId?: unknown; cwd?: unknown }
-            if (typeof sessionId !== 'string' || sessionId === ''
-              || typeof cwd !== 'string' || cwd === '') {
-              return Promise.resolve({ ok: true as const, value: { block: '' } })
+          void serveRpcChannel(req, res, { channel: CHANNEL, logLabel: 'dsh-memory: /dsh-memory channel' }, (endpoint, payload) => {
+            if (endpoint !== ENDPOINT_BLOCK) {
+              return Promise.resolve({
+                ok: false as const,
+                error: { code: 'internal', message: `unknown endpoint ${endpoint}`, details: {} },
+              })
             }
-            const block = assembleMemoryBlock(store.listActive(cwdToWorkspaceKey(cwd), sessionId), budget, sessionId)
-            return Promise.resolve({ ok: true as const, value: { block } })
-          } catch (error) {
-            const reason = error instanceof Error ? error.message : String(error)
-            ctx.logger.warn(`[dsh-memory] block endpoint failed: ${reason}`)
-            return Promise.resolve({
-              ok: false as const,
-              error: { code: 'internal', message: `block assembly failed: ${reason}`, details: {} },
-            })
-          }
-        })
-      },
-    }))
+            try {
+              const { sessionId, cwd } = (payload ?? {}) as { sessionId?: unknown; cwd?: unknown }
+              if (typeof sessionId !== 'string' || sessionId === ''
+                || typeof cwd !== 'string' || cwd === '') {
+                return Promise.resolve({ ok: true as const, value: { block: '' } })
+              }
+              const block = assembleMemoryBlock(store.listActive(cwdToWorkspaceKey(cwd), sessionId), budget, sessionId)
+              return Promise.resolve({ ok: true as const, value: { block } })
+            } catch (error) {
+              const reason = error instanceof Error ? error.message : String(error)
+              ctx.logger.warn(`[dsh-memory] block endpoint failed: ${reason}`)
+              return Promise.resolve({
+                ok: false as const,
+                error: { code: 'internal', message: `block assembly failed: ${reason}`, details: {} },
+              })
+            }
+          })
+        },
+      }))
     }
 
     // Fire-and-forget harvest: every exception is contained to a warning log,
