@@ -107,7 +107,7 @@ function buildSession(sessionId: string, systemPrompt?: string): BuiltSession {
     session.append('system/message', {
       turn: 0,
       step: 0,
-      message: createSystemMessage(systemPrompt, 'dsh-agent-instructions'),
+      message: createSystemMessage(systemPrompt),
     }, { surfaceOp: 'append' })
     session.append('step/end', { turn: 0, step: 0 })
     session.append('turn/end', { turn: 0, reason: { kind: 'completed' } })
@@ -400,7 +400,7 @@ describe('dsh-undo spike: foreign replacement events in the turn range (§2.2 ap
     session.append('user/message', user1, { surfaceOp: 'append' })
     const context = createUserMessage({
       content: [{ type: 'text', text: 'context snapshot' }],
-      source: { kind: 'plugin', plugin: 'magic-context' },
+      source: { kind: 'plugin', plugin: 'magic-context' } as never,
     })
     const contextEvent = session.append('user/message', context, { surfaceOp: 'append' })
     const assistant1 = createAssistantMessage({
@@ -453,7 +453,7 @@ describe('dsh-undo spike: foreign replacement events in the turn range (§2.2 ap
     // A magic-context refresh of turn-1's context row.
     const refreshedContext = createUserMessage({
       content: [{ type: 'text', text: 'context refreshed' }],
-      source: { kind: 'plugin', plugin: 'magic-context' },
+      source: { kind: 'plugin', plugin: 'magic-context' } as never,
     })
     session.append('user/message', refreshedContext, {
       surfaceOp: { op: 'replace', startSeq: SessionSeq(contextSeq), endSeq: SessionSeq(contextSeq) },

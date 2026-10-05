@@ -22,7 +22,7 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 // Type-only: pulls the SlotRegistry service merge (ctx.slots).
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
 import { RedoAction } from './RedoAction.tsx'
 import { UndoButton } from './UndoButton.tsx'
 import { CHANNEL, RowHider, UndoSurface, type UndoSurfaceDeps } from './undo-engine.ts'

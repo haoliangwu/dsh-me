@@ -55,7 +55,9 @@ export interface UndoTombstoneMeta {
 export function isUndoTombstone(event: SessionEvent): boolean {
   if (event.type !== 'system/message' || !isReplacementSurfaceEvent(event)) return false
   if (event.data.message.content.length !== 0) return false
-  const source = event.data.message.source
+  // Tombstones carry a plugin source (`kind: 'plugin'` + plugin id), which the
+  // typed system-prompt source face does not model; read structurally.
+  const source = event.data.message.source as { kind?: unknown; plugin?: unknown }
   return source.kind === 'plugin' && source.plugin === UNDO_PLUGIN
 }
 
@@ -275,7 +277,7 @@ export function buildTombstoneAppend(input: TombstoneBuildInput): TombstoneAppen
   const source = {
     kind: 'plugin' as const,
     plugin: UNDO_PLUGIN,
-  } as SystemMessage['source']
+  } as unknown as SystemMessage['source']
   const message: SystemMessage = {
     id: MessageId(randomUUID()),
     role: 'system',
@@ -396,7 +398,7 @@ export function buildRedoAppendPlan(
           data: {
             turn: fakeTurn,
             step: event.data.step,
-            callId: freshCallId(event.data.callId),
+            callId: ToolCallId(freshCallId(event.data.callId)),
             name: event.data.name,
             arguments: event.data.arguments,
           },
@@ -482,12 +484,16 @@ function replayAssistantMessage(
   fakeTurn: number,
   freshCallId: (id: string) => string,
 ): SessionEventMap['assistant/message'] {
-  const message = { ...structuredClone(data.message), id: MessageId(randomUUID()) } as AssistantMessage
-  // Remap embedded tool-call block ids to the replayed calls, so the wire
-  // and the tool rows pair against the fake turn's fresh call ids.
-  message.content = message.content.map((block) =>
-    block.type === 'tool-call' ? { ...block, id: ToolCallId(freshCallId(block.id)) } : block,
-  )
+  const cloned = structuredClone(data.message) as AssistantMessage
+  const message = {
+    ...cloned,
+    id: MessageId(randomUUID()),
+    // Remap embedded tool-call block ids to the replayed calls, so the wire
+    // and the tool rows pair against the fake turn's fresh call ids.
+    content: cloned.content.map((block) =>
+      block.type === 'tool-call' ? { ...block, id: ToolCallId(freshCallId(block.id)) } : block,
+    ),
+  } as AssistantMessage
   return {
     turn: fakeTurn,
     step: data.step,
@@ -511,9 +517,13 @@ function replayToolResult(
   fakeTurn: number,
   freshCallId: (id: string) => string,
 ): SessionEventMap['tool/result'] {
-  const message = { ...structuredClone(data.message), id: MessageId(randomUUID()) } as ToolResultMessage
-  message.source = { ...message.source, callId: ToolCallId(freshCallId(message.source.callId)) }
-  message.toolCallId = ToolCallId(freshCallId(message.toolCallId))
+  const cloned = structuredClone(data.message) as ToolResultMessage
+  const message = {
+    ...cloned,
+    id: MessageId(randomUUID()),
+    source: { ...cloned.source, callId: ToolCallId(freshCallId(cloned.source.callId)) },
+    toolCallId: ToolCallId(freshCallId(cloned.toolCallId)),
+  } as ToolResultMessage
   return {
     turn: fakeTurn,
     step: data.step,

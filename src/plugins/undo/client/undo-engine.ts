@@ -7,7 +7,7 @@
  * shadowed original rows plus redone-orphan turn-tail rows, restored on
  * dispose).
  */
-import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
 import {
   deriveUndoState,
   EMPTY_UNDO_STATE,

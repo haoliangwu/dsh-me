@@ -70,7 +70,7 @@ function sessionWithTurns(sessionId: string, count: number, systemPrompt?: strin
     session.append('system/message', {
       turn: 0,
       step: 0,
-      message: createSystemMessage(systemPrompt, 'dsh-agent-instructions'),
+      message: createSystemMessage(systemPrompt),
     }, { surfaceOp: 'append' })
   }
   const ids: TurnIds[] = []
@@ -304,7 +304,7 @@ describe('pure: tombstone recognition and construction (§2.1)', () => {
     const foreign = session.append('system/message', {
       turn: 1,
       step: 0,
-      message: createSystemMessage('', 'somebody-else'),
+      message: createSystemMessage(''),
     }, {
       surfaceOp: { op: 'replace', startSeq: SessionSeq(tombstone.seq), endSeq: SessionSeq(tombstone.seq) },
       sourceEventSeqs: [tombstone.seq],
@@ -314,7 +314,7 @@ describe('pure: tombstone recognition and construction (§2.1)', () => {
     const plain = session.append('system/message', {
       turn: 1,
       step: 0,
-      message: createSystemMessage('', UNDO_PLUGIN),
+      message: createSystemMessage(''),
     }, { surfaceOp: 'append' })
     expect(isUndoTombstone(plain)).toBe(false)
     void events
@@ -469,7 +469,7 @@ describe('pure: redo replay plan (§2.2)', () => {
     // A magic-context refresh of turn-1's user row.
     const refreshed = createUserMessage({
       content: [{ type: 'text', text: 'context refreshed' }],
-      source: { kind: 'plugin', plugin: 'magic-context' },
+      source: { kind: 'plugin', plugin: 'magic-context' } as never,
     })
     session.append('user/message', refreshed, {
       surfaceOp: { op: 'replace', startSeq: SessionSeq(user1Seq), endSeq: SessionSeq(user1Seq) },
@@ -546,7 +546,7 @@ describe('pure: redo replay plan (§2.2)', () => {
     session.append('system/message', {
       turn: 0,
       step: 0,
-      message: createSystemMessage('you are a robot', 'dsh-agent-instructions'),
+      message: createSystemMessage('you are a robot'),
     }, { surfaceOp: 'append' })
     appendToolTurn(session, 1)
     const shadowed = shadowedNodesOf(session, 1)
@@ -770,7 +770,7 @@ describe('endpoint: round trips on a real session', () => {
     session.append('system/message', {
       turn: 1,
       step: 0,
-      message: createSystemMessage('you are a harness agent', 'dsh-agent-instructions'),
+      message: createSystemMessage('you are a harness agent'),
     }, { surfaceOp: 'append' })
     const ids = appendPlainTurn(session, 1)
     const host = hostOf(session)

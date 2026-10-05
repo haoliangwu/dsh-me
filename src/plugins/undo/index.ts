@@ -15,9 +15,9 @@
  * enqueue precedent). All state is derived from the event log — restart and
  * pagination are lossless.
  */
-import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
-import type { RpcError, RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { ConnectionRpcFailure as RpcError, ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
+import { serveRpcChannel } from '../../shared/rpc-channel.ts'
 import { Session, SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import type {
   SessionEvent,
@@ -25,6 +25,7 @@ import type {
 } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import {
+  FAKE_TURN_BASE,
   buildRedoAppendPlan,
   buildTombstoneAppend,
   findAssistantMessageTurn,
@@ -106,10 +107,7 @@ function internal(message: string): { ok: false; error: RpcError } {
 }
 
 function sessionNotFound(sessionId: string): { ok: false; error: RpcError } {
-  // The installed dsh-host-apiproxy pins a different dsh-session brand, so the
-  // strict nominal `SessionId` differs from ours; the wire value is the same
-  // branded string, so the cast is shape-only.
-  const details = { sessionId: SessionId(sessionId) } as unknown as Extract<RpcError, { code: 'session-not-found' }>['details']
+  const details = { sessionId: SessionId(sessionId) }
   return {
     ok: false as const,
     error: { code: 'session-not-found', message: `no live session ${sessionId}`, details },
@@ -216,7 +214,27 @@ export async function performRedo(host: UndoHost, sessionId: string): Promise<Re
     return internal('dsh-undo/redo-stale: newer messages follow the tombstone; redo is no longer available')
   }
   const plan = buildRedoAppendPlan(events, tombstone)
-  for (const step of plan) appendRedoStep(session, step)
+  try {
+    for (const step of plan) appendRedoStep(session, step)
+  } catch (error) {
+    // appendRedoStep is not atomic: a mid-plan rejection (surface validation
+    // or a lost race) leaves a half-open fake turn with no turn/end, which
+    // pins the client's idle fold (idle = lastTurnEndSeq >= lastTurnStartSeq)
+    // and disables the button forever on an append-only log. Close the fake
+    // turn with a synthetic aborted turn/end so the log stays well-formed and
+    // the button recovers; the redo value itself is lost.
+    try {
+      session.append('turn/end', {
+        turn: FAKE_TURN_BASE + tombstone.turn,
+        reason: { kind: 'aborted' },
+      } as SessionEventMap['turn/end'])
+    } catch {
+      // Even the recovery append failed; the session service owns the log.
+    }
+    const reason = error instanceof Error ? error.message : String(error)
+    console.error(`dsh-undo: redo failed mid-replay: ${reason}`)
+    return internal(`dsh-undo/redo-failed: ${reason}`)
+  }
   return { ok: true as const, value: { turn: tombstone.turn } }
 }
 
@@ -306,7 +324,7 @@ export function apply(ctx: Context): void {
       kind: 'prefix',
       path: CHANNEL,
       handler: (req, res) => {
-        void serveChannel(req, res, CHANNEL, (endpoint, payload) => {
+        void serveRpcChannel(req, res, { channel: CHANNEL, logLabel: 'dsh-undo: /dsh-undo channel' }, (endpoint, payload) => {
           if (endpoint === ENDPOINT_UNDO) {
             const parsed = parseUndoPayload(payload)
             if (parsed === undefined) {
@@ -351,83 +369,3 @@ function parseRedoPayload(payload: unknown): { sessionId: string } | undefined {
  * client-request envelope, server-response envelope out) so the browser-side
  * `connection.rpc.call()` keeps working unchanged.
  */
-async function serveChannel(
-  req: IncomingMessage,
-  res: ServerResponse,
-  channel: string,
-  handler: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<RpcResult<unknown>>,
-): Promise<void> {
-  const writeJson = (status: number, body: unknown): void => {
-    const bytes = Buffer.from(JSON.stringify(body))
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.setHeader('Content-Length', String(bytes.length))
-    res.writeHead(status)
-    res.end(bytes)
-  }
-  const endpoint = endpointFromPath(channel, req.url ?? '/')
-  if (req.method !== 'POST' || endpoint === undefined) {
-    res.writeHead(404)
-    res.end('not found')
-    return
-  }
-  if (req.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
-    res.writeHead(415)
-    res.end('content type must be application/json')
-    return
-  }
-  let body: unknown
-  try {
-    const chunks: Buffer[] = []
-    for await (const chunk of req) {
-      const part = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string)
-      chunks.push(part)
-    }
-    body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
-  } catch {
-    res.writeHead(400)
-    res.end('body is not JSON')
-    return
-  }
-  const message = (body ?? {}) as { type?: unknown; rpcId?: unknown; method?: unknown; payload?: unknown }
-  const respond = (result: RpcResult<unknown>): void =>
-    writeJson(200, { type: 'server-response', rpcId: typeof message.rpcId === 'string' ? message.rpcId : '', result })
-  if (typeof body !== 'object' || body === null || message.type !== 'client-request'
-    || typeof message.rpcId !== 'string' || typeof message.method !== 'string') {
-    respond({
-      ok: false,
-      error: { code: 'gateway/bad-request', message: 'invalid client-request message', details: {} },
-    } as unknown as RpcResult<unknown>)
-    return
-  }
-  if (message.method !== endpoint) {
-    respond({
-      ok: false,
-      error: {
-        code: 'gateway/bad-request',
-        message: `method ${JSON.stringify(message.method)} does not match endpoint ${JSON.stringify(endpoint)}`,
-        details: {},
-      },
-    } as unknown as RpcResult<unknown>)
-    return
-  }
-  const controller = new AbortController()
-  req.once('aborted', () => controller.abort())
-  req.socket.once('close', () => controller.abort())
-  try {
-    respond(await handler(endpoint, message.payload, controller.signal))
-  } catch (error) {
-    // rc.2 lesson: the browser only shows "transport failure ... HTTP 500" —
-    // the thrown validation detail must reach the server log or it is lost.
-    console.error(`dsh-undo: ${channel}/${String(endpoint)} handler failure:`, error)
-    res.writeHead(500)
-    res.end(`handler failure: ${String(error)}`)
-  }
-}
-
-/** Extract and validate the endpoint segment below the channel prefix. */
-function endpointFromPath(channel: string, pathname: string): string | undefined {
-  if (!pathname.startsWith(`${channel}/`)) return undefined
-  const endpoint = pathname.slice(channel.length + 1)
-  if (endpoint.split('/').some((segment) => segment === '' || segment === '.' || segment === '..' || !/^[A-Za-z0-9_$.-]+$/.test(segment))) return undefined
-  return endpoint
-}
