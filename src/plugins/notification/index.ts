@@ -12,7 +12,7 @@
  */
 import { execFile } from 'node:child_process'
 import type { Context } from '@deepseek-ai/cordis'
-import type { ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
+import type { RpcResult } from '../../shared/rpc-types'
 import z from '@deepseek-ai/schemastery'
 import { serveRpcChannel } from '../../shared/rpc-channel.ts'
 // Type-only import activates the optional webServer Context declaration.
@@ -68,9 +68,27 @@ const ENDPOINT_CONFIG = 'config'
 /** Endpoint under {@link CHANNEL} showing one native desktop notification. */
 const ENDPOINT_NOTIFY = 'notify'
 
-/** macOS notification payload limit is 256 bytes; the OS truncates long text. */
-const TITLE_MAX_CHARS = 48
-const BODY_MAX_CHARS = 192
+/** macOS notification payload limit is 256 bytes; keep headroom below it. */
+const TITLE_MAX_BYTES = 64
+const BODY_MAX_BYTES = 168
+
+/**
+ * Truncate a string to a UTF-8 byte budget without splitting a code point.
+ * @param text - the text to bound.
+ * @param maxBytes - the maximum UTF-8 byte length.
+ * @returns the longest prefix (whole code points) that fits.
+ */
+export function truncateUtf8(text: string, maxBytes: number): string {
+  let bytes = 0
+  let out = ''
+  for (const ch of text) {
+    const size = Buffer.byteLength(ch)
+    if (bytes + size > maxBytes) break
+    bytes += size
+    out += ch
+  }
+  return out
+}
 
 /**
  * One-line AppleScript string literal for `display notification`: CR/LF
@@ -87,14 +105,16 @@ export function appleScriptString(text: string): string {
 /**
  * Compose the complete `display notification` AppleScript for one title/body
  * pair: `with title` carries the title, the bare string carries the body.
+ * Title and body are bounded by UTF-8 bytes (macOS truncates at 256 bytes
+ * total; code-point counts would routinely blow that with CJK text).
  * @param title - the notification title.
  * @param body - the notification body.
  * @returns the `-e` script argument.
  */
 export function buildOsascriptScript(title: string, body: string): string {
   const bounded: { title: string; body: string } = {
-    title: Array.from(title).slice(0, TITLE_MAX_CHARS).join(''),
-    body: Array.from(body).slice(0, BODY_MAX_CHARS).join(''),
+    title: truncateUtf8(title, TITLE_MAX_BYTES),
+    body: truncateUtf8(body, BODY_MAX_BYTES),
   }
   return `display notification ${appleScriptString(bounded.body)} with title ${appleScriptString(bounded.title)}`
 }
@@ -125,13 +145,13 @@ function dispatchNativeNotify(payload: unknown, ctx: Context): Promise<RpcResult
   }
   if (process.platform !== 'darwin') {
     ctx.logger.warn('dsh-ui-notification: native notify only supported on darwin, got %s', process.platform)
-    return Promise.resolve({ ok: true as const, value: { delivered: false } })
+    return Promise.resolve({ ok: false as const, error: { code: 'unsupported', message: 'native notification unavailable on this platform', details: {} } })
   }
   return new Promise((resolve) => {
     execFile('osascript', ['-e', buildOsascriptScript(title, body)], (error, _stdout, stderr) => {
       if (error) {
         ctx.logger.warn('dsh-ui-notification: osascript failed', error, stderr)
-        resolve({ ok: true as const, value: { delivered: false } })
+        resolve({ ok: false as const, error: { code: 'internal', message: 'osascript failed to show the notification', details: {} } })
         return
       }
       resolve({ ok: true as const, value: { delivered: true } })

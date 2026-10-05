@@ -25,7 +25,7 @@
  * in the renderer. Browser profiles keep the renderer Notification API.
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-import type { ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
+import type { RpcResult } from '../../../shared/rpc-types'
 import {
   assistantTurnText,
   bodyForTurnEnd,
@@ -77,6 +77,16 @@ const DEFAULT_CONFIG: ConfigResponse = {
   notifyQuestion: true,
   notifyApproval: true,
   notifySound: true,
+}
+
+/**
+ * One fire-kind resolution: which config toggle gates it and which chime
+ * variant announces it. Question/plan-review map to `question`; approval to
+ * `approval`. Replaces repeated discriminant switches.
+ */
+const INTERACTION_FIRE: Record<'question' | 'approval', { readonly toggle: 'notifyQuestion' | 'notifyApproval'; readonly variant: ChimeVariant }> = {
+  question: { toggle: 'notifyQuestion', variant: 'default' },
+  approval: { toggle: 'notifyApproval', variant: 'approval' },
 }
 
 /** Structural session-event entry/change faces the browser session window exposes. */
@@ -151,7 +161,11 @@ export function apply(ctx: ClientContext): void {
   const notify: NotifyFn = (title, body, variant) => {
     if (desktop) {
       if (config.notifySound) chimeSound(variant)
-      void scoped.connection.rpc.call(CHANNEL, ENDPOINT_NOTIFY, { title, body }).catch((error) => {
+      void scoped.connection.rpc.call(CHANNEL, ENDPOINT_NOTIFY, { title, body }).then((result) => {
+        if (!result.ok || (typeof result.value === 'object' && result.value !== null && (result.value as { delivered?: boolean }).delivered === false)) {
+          logger.warn('dsh-ui-notification: desktop native notify was not delivered')
+        }
+      }).catch((error) => {
         logger.warn('dsh-ui-notification: desktop native notify failed', error)
       })
       return
@@ -227,10 +241,9 @@ export function apply(ctx: ClientContext): void {
     const { keys, fired } = pendingInteractionNotifications(seenKeys, pendingInteractionsOf(scoped.uiSession.sessionStatus.getSnapshot()))
     if (keys.length > 0) seenKeys = new Set([...seenKeys, ...keys])
     for (const item of fired) {
-      const enabled = item.kind === 'approval' ? config.notifyApproval : config.notifyQuestion
-      if (!shouldNotify(document.visibilityState, enabled)) continue
-      const variant: ChimeVariant = item.kind === 'approval' ? 'approval' : 'default'
-      notify(titleFor(item.kind, sessionName(item.sessionId)), item.body, variant)
+      const option = INTERACTION_FIRE[item.kind]
+      if (!shouldNotify(document.visibilityState, config[option.toggle])) continue
+      notify(titleFor(item.kind, sessionName(item.sessionId)), item.body, option.variant)
     }
   }
   ctx.effect(() => {

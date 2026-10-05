@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appleScriptString, buildOsascriptScript, Config } from './index.ts'
+import { appleScriptString, buildOsascriptScript, Config, truncateUtf8 } from './index.ts'
 
 describe('Config schema', () => {
   it('applies defaults to an empty object', () => {
@@ -63,8 +63,24 @@ describe('osascript notification script', () => {
 
   it('bounds title and body to macOS-friendly lengths', () => {
     const script = buildOsascriptScript('t'.repeat(120), 'b'.repeat(300))
-    expect(script).toContain(`"${'t'.repeat(48)}"`)
-    expect(script).toContain(`"${'b'.repeat(192)}"`)
+    expect(script).toContain(`"${'t'.repeat(64)}"`)
+    expect(script).toContain(`"${'b'.repeat(168)}"`)
     expect(script.length).toBeLessThan(280)
+  })
+
+  it('truncates by UTF-8 bytes, not code points', () => {
+    // 一个 CJK 字符 = 3 bytes；预算 9 bytes 恰好装 3 个。
+    expect(truncateUtf8('审批通知', 9)).toBe('审批通')
+    // 预算 8 bytes 装不下第 3 个字符，整字符丢弃不劈开。
+    expect(truncateUtf8('审批通知', 8)).toBe('审批')
+    // ASCII 按字节计，多字节字符不会撕裂。
+    expect(truncateUtf8('abc中文', 5)).toBe('abc')
+    expect(truncateUtf8('abc中文', 6)).toBe('abc中')
+  })
+
+  it('keeps a CJK notification inside the byte budget', () => {
+    const script = buildOsascriptScript('审批'.repeat(30), '需要写入文件'.repeat(60))
+    // 截断后仍是整字符。
+    expect(script).toMatch(/^display notification "[\u4e00-\u9fff]*" with title "[\u4e00-\u9fff]*"$/)
   })
 })
