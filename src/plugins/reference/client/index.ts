@@ -25,7 +25,7 @@ import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 // Type-only: the browser Connection handle face for the host path-existence probe.
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
-import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
 import type { InputTriggerServiceContract, InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { ConfigForm, ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { ReferenceEntry, ReferenceTable } from '../pure.ts'
@@ -128,7 +128,7 @@ export function apply(ctx: ClientContext): void {
   const form = tableFormOf(ctx.configForms.get<{ table?: ReferenceTable }>(SETTINGS_NS))
   // Resolved once, where `connection` is declared in this plugin's inject; the
   // browser RPC carrier face is not a Context merge in the published types.
-  const connection = ctx.get('connection') as ConnectionHandle
+  const connection = ctx.get('connection') as unknown as ConnectionHandle
 
   // The host's resolved git cache root, fetched once at startup. Fall back to
   // the deterministic default while unanswered or on a refused/failed fetch —

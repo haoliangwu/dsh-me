@@ -61,3 +61,9 @@ per-profile 过滤字段、目录清单快照挂载、git 凭据管理（SSH key
 ## 安装配置
 
 见[根 README](../../../README.md)的「安装与更新」。无必填配置，装上即用（空表无注入内容）。
+
+## Known Limitations and Deferred Work
+
+- **POSIX-only 选择器**：`pickDirectory` 的 win32 分支（powershell `FolderBrowserDialog`）返回盘符路径（`C:\...`），会被保存层路径校验（仅接受 `/` 或 `~/` 前缀）拒绝 —— win32 上点选结果为必驳的死路径。当前为 POSIX-only；win32 请用手动输入。见 `.scratch/reference/issues/` 与 `directory-picker.ts`。
+- **运行时表校验为 warn 级**：`loader/volatile-update` 时对设置页写入的表跑与装配期相同的语义校验，失败仅 warn（写链由 settings 服务所有）。装配期（Config 解析）仍 fail loud。
+- **旧 `hidden` 迁移语义**：`hidden: true` 迁移为 `autoInclude: false`（不再自动广告），菜单候选不受影响（全量可见）。这是相对旧版（hidden 只藏菜单不藏广告）的语义反转，spec.md 已同步。

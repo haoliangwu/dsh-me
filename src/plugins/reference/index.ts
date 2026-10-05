@@ -33,13 +33,22 @@ import { homedir } from 'node:os'
 import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
-import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context, Volatile } from '@deepseek-ai/cordis'
-import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
+import { serveRpcChannel } from '../../shared/rpc-channel.ts'
 // Type-only import activates the optional webServer Context declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import z from '@deepseek-ai/schemastery'
 import { pickDirectoryOnHost } from './directory-picker.ts'
+
+// The `loader/volatile-update` event is declared by the official vendor loader
+// (vendor/loader/src/index.ts EventMap) which dsh-me does not depend on at
+// type level; re-declare it so the settings-write watcher typechecks.
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    'loader/volatile-update'(paths: readonly (readonly string[])[]): void
+  }
+}
 import {
   aliasValidationError,
   buildAdvertisementText,
@@ -105,31 +114,50 @@ const entryShape = z.object({
 
 const tableShape = z.dict(entryShape)
 
-/** The settings-namespace schema: map(alias → local | git entry). */
-export const Schema = z
-  .transform(tableShape, (table) => {
-    for (const [alias, entry] of Object.entries(table)) {
-      const aliasError = aliasValidationError(alias)
-      if (aliasError !== undefined) {
-        throw new Error(`dsh-reference: alias「${alias}」${aliasError}`)
-      }
-      const shape = entry as { path?: unknown; repository?: unknown; branch?: unknown; refresh?: unknown }
-      const shapeError = entryShapeError(shape)
-      if (shapeError !== undefined) {
-        throw new Error(`dsh-reference: entry「${alias}」${shapeError}`)
-      }
-      if (typeof shape.path === 'string') {
-        const pathError = referencePathError(shape.path)
-        if (pathError !== undefined) {
-          throw new Error(`dsh-reference: entry「${alias}」path「${shape.path}」${pathError}`)
-        }
+/**
+ * Validate one reference table: alias syntax, entry shape, and path
+ * semantics. Shared by the exported {@link Schema} and the live Config
+ * `table` field so the settings write path (volatile mutation) and the
+ * profile assembly path enforce the SAME rules — a hand-edited cordis.yml or
+ * a settings-page save cannot land an invalid alias/path silently.
+ */
+function validateReferenceTable(table: Record<string, unknown>): Record<string, unknown> {
+  for (const [alias, entry] of Object.entries(table)) {
+    const aliasError = aliasValidationError(alias)
+    if (aliasError !== undefined) {
+      throw new Error(`dsh-reference: alias「${alias}」${aliasError}`)
+    }
+    const shape = entry as { path?: unknown; repository?: unknown; branch?: unknown; refresh?: unknown }
+    const shapeError = entryShapeError(shape)
+    if (shapeError !== undefined) {
+      throw new Error(`dsh-reference: entry「${alias}」${shapeError}`)
+    }
+    if (typeof shape.path === 'string') {
+      const pathError = referencePathError(shape.path)
+      if (pathError !== undefined) {
+        throw new Error(`dsh-reference: entry「${alias}」path「${shape.path}」${pathError}`)
       }
     }
-    return table
-  })
+  }
+  return table
+}
+
+/** The settings-namespace schema: map(alias → local | git entry). */
+export const Schema = z
+  .transform(tableShape, validateReferenceTable)
   .default({})
 
-/** The plugin Config schema: cacheDir (optional; home-resolved by the pure core) + global refresh, and the volatile reference table (served as the `dsh-reference` settings namespace). */
+/**
+ * The plugin Config schema: cacheDir (optional; home-resolved by the pure core) + global refresh, and the volatile reference table (served as the `dsh-reference` settings namespace).
+ *
+ * NOTE: the table must stay a PLAIN `z.dict(...).volatile()` — the official
+ * settings service projects the editable form via `volatileForm` →
+ * `plainSchema` → `schema.toJSON()`, and a `transform` wrapper serializes as
+ * `{type:'transform'}` which the client configForms renderer cannot project
+ * (the settings page hangs on Loading…). Semantic validation therefore lives
+ * OUTSIDE the schema: `validateReferenceTable` runs at apply (fail loud) and
+ * on every `loader/volatile-update` (warn), not in a schema transform.
+ */
 export const Config = z.object({
   cacheDir: z.string(),
   refresh: refreshModeShape.default('missing-only'),
@@ -207,6 +235,11 @@ function runGit(args: readonly string[], options: { readonly cwd: string }): Pro
  * @param config - validated {@link Config}.
  */
 export function apply(ctx: Context, config: Config): void {
+  // Assembly-time validation (fail loud — the pre-transform schema behavior):
+  // an invalid alias/path in the profile config must surface at load, not
+  // silently degrade. The settings write path is guarded separately on every
+  // `loader/volatile-update` (warn).
+  validateReferenceTable(config.table.get() as Record<string, unknown>)
   const scoped = ctx as unknown as ReferenceCtx
   const home = homedir()
   // We ship our own settings page for this namespace; suppress the generic
@@ -251,7 +284,19 @@ export function apply(ctx: Context, config: Config): void {
   // `loader/volatile-update`, so a git entry saved through the settings page
   // clones without a reload (spec US-1/US-5 — the table is runtime data; a
   // config HMR would never fire).
-  ctx.on('loader/volatile-update', materializeAll)
+  ctx.on('loader/volatile-update', () => {
+    // Runtime guard for the settings write path: validate the mutated table
+    // with the same rules the schema transform enforces at assembly, so an
+    // entry saved through the settings page cannot land an invalid
+    // alias/path silently (surface validation warn; the write itself is
+    // owned by the settings service).
+    try {
+      validateReferenceTable(config.table.get() as Record<string, unknown>)
+    } catch (error) {
+      scoped.logger.warn(`dsh-reference: settings table invalid: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    materializeAll()
+  })
 
   // Read fresh at every assembly: settings edits (the entry config or the web
   // settings page) land in the next turn's advertisement.
@@ -275,7 +320,26 @@ export function apply(ctx: Context, config: Config): void {
       kind: 'prefix',
       path: CHANNEL,
       handler: (req, res) => {
-        void serveReferenceChannel(req, res, home, cacheDir, config.refresh ?? 'missing-only')
+        void serveRpcChannel(req, res, { channel: CHANNEL, logLabel: 'dsh-reference: /dsh-reference channel' }, (endpoint, payload) => {
+          if (endpoint === ENDPOINT_EXISTS) {
+            const value = (payload ?? {}) as { path?: unknown }
+            if (typeof value.path !== 'string') {
+              return Promise.resolve({ ok: false as const, error: { code: 'internal', message: 'path must be a string', details: {} } })
+            }
+            return serveExists(value.path, home)
+          }
+          if (endpoint === ENDPOINT_CONFIG) {
+            const value: ConfigResponse = { cacheDir, refresh: config.refresh ?? 'missing-only' }
+            return Promise.resolve({ ok: true as const, value })
+          }
+          if (endpoint === ENDPOINT_PICK_DIRECTORY) {
+            return servePickDirectory(home)
+          }
+          return Promise.resolve({
+            ok: false as const,
+            error: { code: 'internal', message: `unknown endpoint ${endpoint}`, details: {} },
+          })
+        })
       },
     }), 'dsh-reference: /dsh-reference channel')
   })
@@ -295,119 +359,27 @@ interface ConfigResponse {
 }
 
 /**
- * Serve the `/dsh-reference` channel as a Connection-RPC route (POST-only,
- * JSON client-request envelope, server-response envelope out — the same
- * envelope dsh-client-connection's rpcFetchHandler speaks, so the browser-side
- * `connection.rpc.call()` keeps working unchanged). Three endpoints share the
- * envelope parsing: {@link ENDPOINT_EXISTS} stats one path,
- * {@link ENDPOINT_PICK_DIRECTORY} spawns the platform's folder dialog, and
- * {@link ENDPOINT_CONFIG} answers the host's resolved git cacheDir + refresh.
- * @param req - the incoming HTTP request.
- * @param res - the HTTP response.
- * @param home - the user's home directory (`~/` expansion and picker start).
- * @param cacheDir - the host-resolved git cache root.
- * @param refresh - the global git refresh policy.
- */
-async function serveReferenceChannel(
-  req: IncomingMessage,
-  res: ServerResponse,
-  home: string,
-  cacheDir: string,
-  refresh: RefreshMode,
-): Promise<void> {
-  const writeJson = (status: number, body: unknown): void => {
-    const bytes = Buffer.from(JSON.stringify(body))
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.setHeader('Content-Length', String(bytes.length))
-    res.writeHead(status)
-    res.end(bytes)
-  }
-  const pathname = req.url ?? '/'
-  const urlPath = pathname.split('?', 1)[0]
-  if (req.method !== 'POST'
-    || (urlPath !== `${CHANNEL}/${ENDPOINT_EXISTS}`
-      && urlPath !== `${CHANNEL}/${ENDPOINT_PICK_DIRECTORY}`
-      && urlPath !== `${CHANNEL}/${ENDPOINT_CONFIG}`)) {
-    res.writeHead(404)
-    res.end('not found')
-    return
-  }
-  if (req.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
-    res.writeHead(415)
-    res.end('content type must be application/json')
-    return
-  }
-  let rawBody: unknown
-  try {
-    const chunks: Buffer[] = []
-    for await (const chunk of req) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string))
-    }
-    rawBody = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
-  } catch {
-    res.writeHead(400)
-    res.end('body is not JSON')
-    return
-  }
-  const message = (rawBody ?? {}) as { type?: unknown; rpcId?: unknown; method?: unknown; payload?: unknown }
-  const result = (value: RpcResult<unknown>): void =>
-    writeJson(200, {
-      type: 'server-response',
-      rpcId: typeof message.rpcId === 'string' ? message.rpcId : '',
-      result: value,
-    })
-  if (typeof rawBody !== 'object' || rawBody === null || message.type !== 'client-request'
-    || typeof message.rpcId !== 'string' || typeof message.method !== 'string'
-    || message.method !== urlPath.slice(CHANNEL.length + 1)) {
-    result({ ok: false, error: { code: 'internal', message: 'invalid client-request message', details: {} } })
-    return
-  }
-  if (message.method === ENDPOINT_EXISTS) {
-    await serveExists(message.payload, home, result)
-    return
-  }
-  if (message.method === ENDPOINT_CONFIG) {
-    serveConfig(result, cacheDir, refresh)
-    return
-  }
-  await servePickDirectory(home, result)
-}
 
-/** Answer {@link ENDPOINT_CONFIG} with the host's resolved git cacheDir + refresh policy. */
-function serveConfig(result: (value: RpcResult<unknown>) => void, cacheDir: string, refresh: RefreshMode): void {
-  const value: ConfigResponse = { cacheDir, refresh }
-  result({ ok: true, value })
-}
-
-/** Answer the {@link ENDPOINT_EXISTS} payload with the path's existence. */
-async function serveExists(
-  payload: unknown,
-  home: string,
-  result: (value: RpcResult<unknown>) => void,
-): Promise<void> {
-  const value = (payload ?? {}) as { path?: unknown }
-  if (typeof value.path !== 'string') {
-    result({ ok: false, error: { code: 'internal', message: 'path must be a string', details: {} } })
-    return
-  }
+/** Answer {@link ENDPOINT_EXISTS} with the path's existence. */
+async function serveExists(path: string, home: string): Promise<RpcResult<unknown>> {
   // Stat the resolved absolute path; every stat failure (missing, permission,
   // race) answers false — the settings page treats it as a non-blocking ⚠.
-  const resolved = resolveReferencePath(value.path, home)
+  const resolved = resolveReferencePath(path, home)
   try {
     await stat(resolved)
-    result({ ok: true, value: { exists: true } })
+    return { ok: true, value: { exists: true } }
   } catch {
-    result({ ok: true, value: { exists: false } })
+    return { ok: true, value: { exists: false } }
   }
 }
 
 /** Answer {@link ENDPOINT_PICK_DIRECTORY} with the native folder dialog. */
-async function servePickDirectory(home: string, result: (value: RpcResult<unknown>) => void): Promise<void> {
+async function servePickDirectory(home: string): Promise<RpcResult<unknown>> {
   try {
-    result({ ok: true, value: await pickDirectoryOnHost(home) })
+    return { ok: true, value: await pickDirectoryOnHost(home) }
   } catch (error) {
     // Every picker failed to spawn (missing binary); the client drops the
     // button press silently and keeps the manual input path.
-    result({ ok: false, error: { code: 'internal', message: `directory picker failed: ${String(error)}`, details: {} } })
+    return { ok: false, error: { code: 'internal', message: `directory picker failed: ${String(error)}`, details: {} } }
   }
 }

@@ -20,7 +20,7 @@ describe('Config schema', () => {
   })
 
   it('rejects a refresh outside the const-union', () => {
-    expect(() => Config({ refresh: 'sometimes' })).toThrow()
+    expect(() => Config({ refresh: 'sometimes' } as never)).toThrow()
   })
 })
 
@@ -70,22 +70,22 @@ describe('reference-table schema (settings namespace)', () => {
   })
 
   it('rejects a non-string branch', () => {
-    expect(() => Schema({ repo: { repository: 'https://x/y.git', branch: 7 } })).toThrow(/branch/)
+    expect(() => Schema({ repo: { repository: 'https://x/y.git', branch: 7 } } as never)).toThrow(/branch/)
   })
 
   it('rejects a non-object entry', () => {
-    expect(() => Schema({ docs: '/plain-string' })).toThrow(/expected object/)
+    expect(() => Schema({ docs: '/plain-string' } as never)).toThrow(/expected object/)
   })
 
   it('rejects a non-string path', () => {
-    expect(() => Schema({ docs: { path: 7 } })).toThrow(/expected string/)
+    expect(() => Schema({ docs: { path: 7 } } as never)).toThrow(/expected string/)
   })
 
   it('rejects a non-string description', () => {
-    expect(() => Schema({ docs: { path: '/x', description: 7 } })).toThrow(/expected string/)
+    expect(() => Schema({ docs: { path: '/x', description: 7 } } as never)).toThrow(/expected string/)
   })
 
   it('rejects a non-boolean autoInclude', () => {
-    expect(() => Schema({ docs: { path: '/x', autoInclude: 'yes' } })).toThrow(/expected boolean/)
+    expect(() => Schema({ docs: { path: '/x', autoInclude: 'yes' } } as never)).toThrow(/expected boolean/)
   })
 })
