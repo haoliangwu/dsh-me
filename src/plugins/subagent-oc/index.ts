@@ -142,6 +142,9 @@ class OcProvider implements SubagentProvider {
  * @param config - registry name, binary, agent, optional model, flags, child environment, and disposal grace.
  */
 export function apply(ctx: Context, config: Config): void {
+  // Forwarded host env is snapshotted at apply: a later rotation of the host
+  // variable does not reach already-published children (acceptable — the key
+  // is read at load, matching how the seam scrubs at spawn time).
   const forwarded = Object.fromEntries(
     (config.envFromProcess ?? []).flatMap((name) => {
       const value = process.env[name]

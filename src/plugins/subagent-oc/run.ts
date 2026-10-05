@@ -4,11 +4,16 @@
  * flatten post-publication failures into a settled result, and dispose to
  * managed-range quiescence.
  *
+ * Diagnostics stay safe by construction: the settled `diagnostic` carries only
+ * fixed product/stage/exit facts, NEVER child stderr (which may contain paths,
+ * environment echoes, or file contents). Child stderr is forwarded live to the
+ * Host stderr, mirroring the official subagent-codex provider.
+ *
  * @module dsh-me/plugins/subagent-oc/run
  */
 
 import { randomUUID } from 'node:crypto'
-import { accessSync, constants, statSync } from 'node:fs'
+import { accessSync, constants, statSync, writeFileSync } from 'node:fs'
 import { delimiter, isAbsolute, join } from 'node:path'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
@@ -29,12 +34,8 @@ import type {
 /** Default POSIX grace between subprocess termination tiers. */
 export const DEFAULT_DISPOSE_GRACE_MS = 3_000
 
-/** Safe diagnostic byte ceiling for the settled result (the seam contract). */
-const DIAGNOSTIC_BYTE_LIMIT = 4_096
-
-/** In-memory tail caps for the collect-mode output streams. */
+/** In-memory tail cap for the collect-mode stdout stream. */
 const STDOUT_MAX_BYTES = 1_000_000
-const STDERR_MAX_BYTES = 64_000
 
 type OcFailureStage = 'initialize' | 'process' | 'teardown'
 
@@ -165,16 +166,27 @@ function textBlocks(text: string): ContentBlock[] {
   return text.length === 0 ? [] : [{ type: 'text', text }]
 }
 
-function limitUtf8Bytes(text: string, limit: number): string {
-  const bytes = Buffer.byteLength(text, 'utf8')
-  if (bytes <= limit) return text
-  const truncated = Buffer.from(text, 'utf8').subarray(0, limit).toString('utf8')
-  return `${truncated}…`
+/** Fixed truncation marker appended when the collect tail lost the head. */
+function truncationMarker(): string {
+  return `\n\n[subagent-oc: stdout exceeded ${STDOUT_MAX_BYTES} bytes; head discarded]`
 }
 
-function collectedText(child: SubprocessHandle, stream: 'stdout' | 'stderr'): string {
-  const reader = child.collected[stream]
-  return reader === undefined ? '' : reader.readFrom(0).text
+interface StdoutSnapshot {
+  readonly text: string
+  readonly truncated: boolean
+}
+
+function snapshotStdout(child: SubprocessHandle): StdoutSnapshot {
+  const reader = child.collected.stdout
+  if (reader === undefined) return { text: '', truncated: false }
+  const read = reader.readFrom(0)
+  return { text: read.text, truncated: read.lossy }
+}
+
+/** Settled output blocks; a lost collect head is never silent. */
+function finalOutput(snapshot: StdoutSnapshot): ContentBlock[] {
+  const text = snapshot.text.trim()
+  return textBlocks(snapshot.truncated ? `${text}${truncationMarker()}` : text)
 }
 
 /** Fully resolved inputs for one OpenCode CLI run. */
@@ -217,10 +229,10 @@ export async function startOcRun(
   request: ResolvedSubagentStartRequest,
   spec: OcRunSpec,
 ): Promise<SubagentRun> {
-  const texts = textTask(request.prompt)
   if (request.signal.aborted) {
     throw new Error('subagent-oc: request was aborted before OpenCode startup')
   }
+  const texts = textTask(request.prompt)
   const task = texts.join('\n')
 
   let child: SubprocessHandle
@@ -231,7 +243,7 @@ export async function startOcRun(
       stdio: {
         stdin: 'ignore',
         stdout: { maxBytes: STDOUT_MAX_BYTES },
-        stderr: { maxBytes: STDERR_MAX_BYTES },
+        stderr: 'pipe',
       },
       graceMs: spec.disposeGraceMs,
       env: spec.env,
@@ -239,6 +251,25 @@ export async function startOcRun(
   } catch (error: unknown) {
     throw ocStartupFailure(error)
   }
+
+  // Child stderr is an observation sink for the Host: forwarded live so the
+  // operator can see product errors, and never surfaced into the settled
+  // diagnostic (which stays safe by construction).
+  const onStderr = (chunk: Buffer | string): void => {
+    const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
+    try {
+      // Synchronous fd forwarding preserves byte order without owning a
+      // backpressure queue. A slow host sink can block this event-loop turn.
+      writeFileSync(process.stderr.fd, bytes)
+    } catch {
+      // Host stderr is an observation sink, not a child-run failure authority.
+    }
+  }
+  const onStderrError = (): void => {
+    // Stderr observation is auxiliary; done remains the terminal authority.
+  }
+  child.stderr?.on('data', onStderr)
+  child.stderr?.on('error', onStderrError)
 
   const runAbort = new AbortController()
   const requestCancel = (): void => {
@@ -249,13 +280,10 @@ export async function startOcRun(
   const onAbort = (): void => { requestCancel() }
   request.signal.addEventListener('abort', onAbort, { once: true })
 
-  const collectOutput = (): ContentBlock[] => textBlocks(collectedText(child, 'stdout').trim())
+  const collectOutput = (): ContentBlock[] => finalOutput(snapshotStdout(child))
   let diagnostic: string | undefined
-  const recordDiagnostic = (facts: OcFailureFacts, stderrTail: string): string => {
-    const safe = failureDiagnostic(facts)
-    diagnostic = stderrTail.trim().length === 0
-      ? safe
-      : `${safe}\n${limitUtf8Bytes(stderrTail.trim(), DIAGNOSTIC_BYTE_LIMIT)}`
+  const recordDiagnostic = (facts: OcFailureFacts): string => {
+    diagnostic = failureDiagnostic(facts)
     return diagnostic
   }
 
@@ -265,18 +293,16 @@ export async function startOcRun(
       try {
         outcome = await child.done
       } catch (error: unknown) {
+        // Every failure path keeps the safe facts in the diagnostic.
+        recordDiagnostic({ stage: 'process' })
         throw new OcRunFailure({ stage: 'process' }, thrown(error))
       }
-      const stdoutText = collectedText(child, 'stdout').trim()
+      const output = finalOutput(snapshotStdout(child))
       if (outcome.exitCode === 0) {
-        return { output: textBlocks(stdoutText), stopReason: 'completed' }
+        return { output, stopReason: 'completed' }
       }
-      const stderrTail = collectedText(child, 'stderr')
-      return {
-        output: textBlocks(stdoutText),
-        diagnostic: recordDiagnostic({ stage: 'process', outcome }, stderrTail),
-        stopReason: 'error',
-      }
+      recordDiagnostic({ stage: 'process', outcome })
+      return { output, diagnostic, stopReason: 'error' }
     },
     collectOutput,
     collectDiagnostic: () => diagnostic,
@@ -294,9 +320,17 @@ export async function startOcRun(
       // Exit observation is auxiliary; done remains the outcome authority.
     }
     await child.done.catch(() => {})
+    // Let stderr already queued by the process close reach the Host before
+    // its forwarding listeners are detached.
+    await new Promise<void>((resolve) => { setImmediate(resolve) })
+    child.stderr?.off('data', onStderr)
+    child.stderr?.off('error', onStderrError)
   }
 
   return subprocessRunHandle({
+    // The seam brands run ids through dsh-brand's brandString; that helper is
+    // skipped here to avoid adding a profile dependency (dsh-brand is not in
+    // the web profile closure). The cast is a deliberate local stand-in.
     id: randomUUID() as SessionId,
     result,
     signal: request.signal,
