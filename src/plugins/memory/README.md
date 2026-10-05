@@ -49,7 +49,11 @@ memory_forget id=3                                          # 按 id 删除（id
 
 命令注册走 `ctx.inject(['commands'])` 子挂载（plan-mode 同款）：没有命令注册表的组合（ACP、headless 主干）照常挂载存储/收割/工具，只是不注册该命令；命令结果文本只进 UI，不进模型历史，模型看到的是那条被 steer 的 prompt 消息。
 
-**forget → 注入行即时同步。** 注入的 memory 行平时是 epoch-pinned 的（store 在两次 compaction 之间的变化不换行，等 compaction 边界），但 `memory_forget` 删掉的字节在会话里没有其它可见副本——`tools.ts` 在删除成功时通过 `onForget` hook 把**调用会话**的 pin 失效（`index.ts` 的 `pendingRefresh`），下一个 `agent/pre-step` 就立即原位替换记忆行，已删内容消失、外部新累积（如其它会话写入的 `#73`）进来；标志在替换发生时消费、会话销毁时清理。**只 forget 触发，memory_write 不触发**：写入内容已呈现在会话表面（工具结果），注入回显=冗余（自有写入的 epoch-pin 语义是刻意的）。`/memory-tidy` 的三个操作（合并/移除/重写）都含 forget，全覆盖；且 hook 由工具触发，天然免疫「指令置位后被无关 digest 差异提前消费」的竞态。其它会话不受影响，仍各自钉住自己的行。
+**注入行同步：两条失效路径，一个标志。** 注入的 memory 行平时是 epoch-pinned 的（store 在两次 compaction 之间的变化不换行，等 compaction 边界），两条路径会临时失效 pin：
+- **`memory_forget`（即时）**：删除成功时 `tools.ts` 的 `onForget` hook 带调用 sessionID 置位 `pendingRefresh`，下一个 `agent/pre-step` 立即原位替换——已删内容消失、外部新累积进来；
+- **`/memory-tidy`（回合后）**：指令置位 `tidyPending`，`agent/turn-stopping` 时转入 `pendingRefresh`，**整理回合结束后**第一个 pre-step（即下次消息的 step）重组——**不论是否调用了 memory_forget**（write-only 的整理也同步）。刻意不直接读该标志：整理回合自己的第一个 pre-step 在工具落地前，若在此时消费，工具改动后的 store 又会重新被 pin 住（原指令置位方案的竞态）。
+
+任一标志在下一个 pre-step 被消费（替换、新追加或 digest 已一致），`memory_write` 不触发任何失效（写入内容已在会话表面，注入回显=冗余；自有写入的 epoch-pin 语义故意保留）。标志按调用会话作用域，其它会话仍各自钉住自己的行；会话销毁时清理。边界：整理后记忆被清空（块为空）时按既有规则不注入、旧行留到会话结束。
 
 ## Memory Tab（会话头部只读可视化）
 
