@@ -200,13 +200,16 @@ function mount(config: Record<string, unknown> = {}): Mounted {
     tools: {
       register: (def: unknown) => { tools.push(def as Mounted['tools'][number]); return () => {} },
     },
-    // cordis optional-service read: the plugin resolves webServer via ctx.get.
-    get: (name: string) => (name === 'webServer' ? fakeWebServer : undefined),
     // cordis child inject: the /memory-tidy command mounts into a fake
-    // commands registry the moment apply runs (same eager resolution the
+    // commands registry and the Memory tab channel into the fake webServer —
+    // both resolved eagerly the moment apply runs (same resolution the
     // composed harness performs at load).
-    inject: vi.fn((_deps: unknown, callback: (child: { commands: { register: (def: Mounted['commands'][number]) => () => void } }) => void) => {
-      callback({ commands: { register: (def) => { commands.push(def); return () => {} } } })
+    inject: vi.fn((deps: readonly string[], callback: (child: unknown) => void) => {
+      if (deps[0] === 'webServer') {
+        callback({ webServer: fakeWebServer, effect: (fn: () => unknown, _label?: string) => fn() })
+      } else {
+        callback({ commands: { register: (def: Mounted['commands'][number]) => { commands.push(def); return () => {} } } })
+      }
       return {}
     }),
   }

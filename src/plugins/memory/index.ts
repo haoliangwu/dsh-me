@@ -125,6 +125,11 @@ interface CommandChildContextLike {
   }
 }
 
+/** Structural web-server face for the Memory tab channel (the child context the inject grants). */
+interface WebServerLike {
+  register(route: { kind: 'prefix'; path: string; handler: (req: IncomingMessage, res: ServerResponse) => void }): () => void
+}
+
 /**
  * Structural live session as the pre-step reads it: the harness `Agent`
  * carries `session` (core/agent runtime-types:168), the same live `Session`
@@ -277,12 +282,13 @@ export function planMemoryInjection(
 /** Structural plugin context face (the webServer slice mirrors how peak-rate consumes it). */
 interface MemoryCtx {
   tools: { register(definition: unknown): () => void }
-  /** Optional service read via `ctx.get` (property access without inject throws in cordis). */
-  get(name: 'webServer'): {
-    register(route: { kind: 'prefix'; path: string; handler: (req: IncomingMessage, res: ServerResponse) => void }): () => void
-  } | undefined
   /** Child command-registry mount: the `/memory-tidy` command ships only when a command registry is composed (plan-mode pattern). */
   inject(dependencies: readonly ['commands'], callback: (child: CommandChildContextLike) => void): unknown
+  /** Child webServer mount: the Memory tab channel registers only when the web server is available (peak-rate pattern). */
+  inject(
+    dependencies: readonly ['webServer'],
+    callback: (child: { webServer: WebServerLike; effect(fn: () => unknown, label?: string): unknown }) => void,
+  ): unknown
   on(event: 'session/event', listener: (session: SessionLike, event: CheckpointEventLike) => void): () => void
   on(event: 'session/disposed', listener: (session: SessionLike) => void): () => void
   on(event: 'agent/turn-stopping', listener: (payload: { readonly agent: { readonly session: { readonly id: string } } }) => void): () => void
@@ -469,54 +475,6 @@ export function apply(ctx: Context, config: Config): void {
       if (sessionId !== undefined) pendingRefresh.add(sessionId)
     }))
 
-    // The Memory tab's data path: a plain webServer prefix route speaking the
-    // Connection-RPC client-request/server-response envelope (peak-rate/
-    // undo serveChannel pattern — `connection.rpc.handle()` is
-    // unreachable from the profile plugin tree). Endpoint `block` recomputes
-    // the block through the SAME pure functions the pre-step injection uses
-    // (`assembleMemoryBlock` over `store.listActive`), so the tab renders
-    // byte-identical content to what the model sees. Empty sessionId/cwd
-    // answer `{block: ''}`; an unknown endpoint answers the RPC error shape;
-    // an assembly/store fault is contained to a warning + error result —
-    // same harvest discipline, never a thrown request. Web-only: profiles
-    // without a webServer (or with the route unused) skip the channel, so the
-    // fiber never waits on a web-plane service (optional service discipline:
-    // `ctx.get` reads the global store and returns undefined; a direct
-    // property read of an undeclared service throws in cordis 4).
-    const webServer = scoped.get('webServer')
-    if (webServer !== undefined) {
-      disposers.push(webServer.register({
-        kind: 'prefix',
-        path: CHANNEL,
-        handler: (req, res) => {
-          void serveRpcChannel(req, res, { channel: CHANNEL, logLabel: 'dsh-memory: /dsh-memory channel' }, (endpoint, payload) => {
-            if (endpoint !== ENDPOINT_BLOCK) {
-              return Promise.resolve({
-                ok: false as const,
-                error: { code: 'internal', message: `unknown endpoint ${endpoint}`, details: {} },
-              })
-            }
-            try {
-              const { sessionId, cwd } = (payload ?? {}) as { sessionId?: unknown; cwd?: unknown }
-              if (typeof sessionId !== 'string' || sessionId === ''
-                || typeof cwd !== 'string' || cwd === '') {
-                return Promise.resolve({ ok: true as const, value: { block: '' } })
-              }
-              const block = assembleMemoryBlock(store.listActive(cwdToWorkspaceKey(cwd), sessionId), budget, sessionId)
-              return Promise.resolve({ ok: true as const, value: { block } })
-            } catch (error) {
-              const reason = error instanceof Error ? error.message : String(error)
-              ctx.logger.warn(`[dsh-memory] block endpoint failed: ${reason}`)
-              return Promise.resolve({
-                ok: false as const,
-                error: { code: 'internal', message: `block assembly failed: ${reason}`, details: {} },
-              })
-            }
-          })
-        },
-      }))
-    }
-
     // Fire-and-forget harvest: every exception is contained to a warning log,
     // never thrown into the compaction transaction (spec decision 15).
     disposers.push(scoped.on('session/event', (session, event) => {
@@ -568,6 +526,57 @@ export function apply(ctx: Context, config: Config): void {
         // Already closed: nothing to release.
       }
     }
+  })
+
+  // The Memory tab's data path: a plain webServer prefix route speaking the
+  // Connection-RPC client-request/server-response envelope (peak-rate/undo
+  // serveChannel pattern — `connection.rpc.handle()` is unreachable from the
+  // profile plugin tree). Endpoint `block` recomputes the block through the
+  // SAME pure functions the pre-step injection uses
+  // (`assembleMemoryBlock` over `store.listActive`), so the tab renders
+  // byte-identical content to what the model sees. Empty sessionId/cwd
+  // answer `{block: ''}`; an unknown endpoint answers the RPC error shape; an
+  // assembly/store fault is contained to a warning + error result — same
+  // harvest discipline, never a thrown request. Web-only: compositions
+  // without a webServer never mount the child, so the fiber never waits on a
+  // web-plane service.
+  //
+  // The channel mounts through a webServer-injected child (peak-rate
+  // pattern), NOT a one-shot `ctx.get` at apply time: webserver availability
+  // can lag the plugin's boot (desktop GUI hosts resolve it later), and a
+  // get-miss would silently skip the route forever while the inject child
+  // waits and mounts it the moment the service appears.
+  scoped.inject(['webServer'], (webCtx) => {
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'prefix',
+      path: CHANNEL,
+      handler: (req, res) => {
+        void serveRpcChannel(req, res, { channel: CHANNEL, logLabel: 'dsh-memory: /dsh-memory channel' }, (endpoint, payload) => {
+          if (endpoint !== ENDPOINT_BLOCK) {
+            return Promise.resolve({
+              ok: false as const,
+              error: { code: 'internal', message: `unknown endpoint ${endpoint}`, details: {} },
+            })
+          }
+          try {
+            const { sessionId, cwd } = (payload ?? {}) as { sessionId?: unknown; cwd?: unknown }
+            if (typeof sessionId !== 'string' || sessionId === ''
+              || typeof cwd !== 'string' || cwd === '') {
+              return Promise.resolve({ ok: true as const, value: { block: '' } })
+            }
+            const block = assembleMemoryBlock(store.listActive(cwdToWorkspaceKey(cwd), sessionId), budget, sessionId)
+            return Promise.resolve({ ok: true as const, value: { block } })
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error)
+            ctx.logger.warn(`[dsh-memory] block endpoint failed: ${reason}`)
+            return Promise.resolve({
+              ok: false as const,
+              error: { code: 'internal', message: `block assembly failed: ${reason}`, details: {} },
+            })
+          }
+        })
+      },
+    }), 'dsh-memory: /dsh-memory channel')
   })
 
   // The `/memory-tidy` command, mounted through a commands-injected child so
