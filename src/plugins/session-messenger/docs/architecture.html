@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>session-messenger 架构图</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f5f5f5;   /* white-smoke */
+      --color-ink:     #2d3142;   /* jet-black */
+      --color-muted:   #4f5d75;   /* blue-slate */
+      --color-accent:  #eb6c36;   /* atomic-tangerine */
+      --font-sans:     'Geist', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Sans SC', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+
+    .frame { max-width: 1200px; width: 100%; overflow-x: auto; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+
+    .colophon {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--color-muted);
+      letter-spacing: 0.06em;
+      border-top: 1px solid rgba(45, 49, 66, 0.12);
+      padding-top: 0.75rem;
+      margin-top: 1.5rem;
+    }
+
+    svg { width: 100%; min-width: 900px; display: block; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Architecture · dsh-me plugin</p>
+    <h1>session-messenger 会话间消息投递架构</h1>
+
+    <svg viewBox="0 0 1216 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="messenger-title messenger-desc">
+      <title id="messenger-title">session-messenger 会话消息投递与回信路由架构</title>
+      <desc id="messenger-desc">Architecture diagram showing a sender session calling relay_message, passing a hop-count and address gate, landing as a sourced relay message in the target session's next-turn inbox, and after the target turn ends a reply policy routing an assistant or error reply back to the sender.</desc>
+      <defs>
+        <marker id="messenger-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="messenger-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="messenger-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+      <!-- Zone: pure decision core (drawn before arrows) -->
+      <rect x="512" y="112" width="192" height="256" rx="8"
+            fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <rect x="560" y="116" width="96" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="608" y="124" fill="rgba(45,49,66,0.40)" font-size="7"
+            font-family="'Geist Mono', monospace" text-anchor="middle"
+            letter-spacing="0.14em">DECISION.TS · PURE</text>
+
+      <!-- ── Arrows (before boxes) ─────────────────────────────────────────── -->
+      <!-- send path, horizontal, y=184 -->
+      <path d="M 192,184 H 280" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#messenger-arrow)"/>
+      <path d="M 440,184 H 528" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#messenger-arrow)"/>
+      <path d="M 688,184 H 776" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#messenger-arrow)"/>
+      <path d="M 936,184 H 1024" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#messenger-arrow)"/>
+      <!-- gate down to blocked outcome -->
+      <path d="M 608,224 V 272" fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#messenger-arrow)"/>
+      <!-- reply return path (dashed) -->
+      <path d="M 1104,224 V 416" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#messenger-arrow)"/>
+      <path d="M 1024,456 H 192" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#messenger-arrow)"/>
+      <path d="M 112,416 V 224" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#messenger-arrow)"/>
+
+      <!-- ── Arrow labels (masks, 8px gap to stroke) ───────────────────────── -->
+      <rect x="200" y="164" width="72" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="236" y="172" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.06em">to · text</text>
+      <rect x="448" y="164" width="72" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="484" y="172" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.06em">planDelivery</text>
+      <rect x="696" y="164" width="72" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="732" y="172" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.06em">DELIVER HOP+1</text>
+      <rect x="944" y="164" width="72" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="980" y="172" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.06em">QUEUE &amp; RUN</text>
+      <rect x="616" y="236" width="40" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="636" y="244" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.06em">BLOCKED</text>
+      <rect x="1048" y="316" width="48" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="1072" y="324" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.06em">turn/end</text>
+      <rect x="580" y="436" width="56" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="608" y="444" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.06em">planReply</text>
+      <rect x="120" y="312" width="48" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="144" y="320" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.06em">autoWake</text>
+
+      <!-- ── Nodes ─────────────────────────────────────────────────────────── -->
+      <!-- N1 sender session -->
+      <rect x="32" y="144" width="160" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="32" y="144" width="160" height="80" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <rect x="40" y="152" width="32" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.22)" stroke-width="0.8"/>
+      <text x="56" y="160" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.08em">SENDER</text>
+      <text x="112" y="188" fill="#2d3142" font-size="12" font-weight="600"
+            font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">会话 A · 发送方</text>
+      <text x="112" y="204" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">main agent</text>
+      <text x="112" y="216" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">cwd scope · alive check</text>
+
+      <!-- N2 relay_message tool -->
+      <rect x="280" y="144" width="160" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="280" y="144" width="160" height="80" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="288" y="152" width="28" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="302" y="160" fill="#2d3142" font-size="7" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.08em">TOOL</text>
+      <text x="360" y="188" fill="#2d3142" font-size="12" font-weight="600"
+            font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">relay_message 工具</text>
+      <text x="360" y="204" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">dsh-tools register</text>
+      <text x="360" y="216" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">list_sessions catalog</text>
+
+      <!-- N3 addressing + hop gate (focal) -->
+      <rect x="528" y="144" width="160" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="528" y="144" width="160" height="80" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <rect x="536" y="152" width="28" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
+      <text x="550" y="160" fill="#eb6c36" font-size="7" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.08em">GATE</text>
+      <text x="608" y="188" fill="#2d3142" font-size="12" font-weight="600"
+            font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">寻址与深度闸</text>
+      <text x="608" y="204" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">resolveTarget · nextHop</text>
+      <text x="608" y="216" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">human input resets hop</text>
+
+      <!-- N4 blocked delivery -->
+      <rect x="528" y="272" width="160" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="528" y="272" width="160" height="80" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="536" y="280" width="32" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="552" y="288" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.08em">REJECT</text>
+      <text x="608" y="316" fill="#2d3142" font-size="12" font-weight="600"
+            font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">投递被拦截</text>
+      <text x="608" y="332" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">self · ambiguous</text>
+      <text x="608" y="344" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">not-found · maxHops</text>
+
+      <!-- N5 target next-turn inbox -->
+      <rect x="776" y="144" width="160" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="776" y="144" width="160" height="80" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="784" y="152" width="32" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="800" y="160" fill="#2d3142" font-size="7" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.08em">INBOX</text>
+      <text x="856" y="188" fill="#2d3142" font-size="12" font-weight="600"
+            font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">目标会话收件箱</text>
+      <text x="856" y="204" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">followup · next-turn</text>
+      <text x="856" y="216" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">source: session-messenger</text>
+
+      <!-- N6 target session turn -->
+      <rect x="1024" y="144" width="160" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="1024" y="144" width="160" height="80" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <rect x="1032" y="152" width="32" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.22)" stroke-width="0.8"/>
+      <text x="1048" y="160" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.08em">TARGET</text>
+      <text x="1104" y="188" fill="#2d3142" font-size="12" font-weight="600"
+            font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">会话 B · 目标回合</text>
+      <text x="1104" y="204" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">relay claimed by turn</text>
+      <text x="1104" y="216" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">busy queues · then runs</text>
+
+      <!-- N7 turn/end reply policy (focal) -->
+      <rect x="1024" y="416" width="160" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="1024" y="416" width="160" height="80" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <rect x="1032" y="424" width="32" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
+      <text x="1048" y="432" fill="#eb6c36" font-size="7" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.08em">POLICY</text>
+      <text x="1104" y="460" fill="#2d3142" font-size="12" font-weight="600"
+            font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">回合结束回信路由</text>
+      <text x="1104" y="476" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">completed max-tokens error</text>
+      <text x="1104" y="488" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">others: no reply · hop+1</text>
+
+      <!-- N8 reply injection into sender -->
+      <rect x="32" y="416" width="160" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="32" y="416" width="160" height="80" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="40" y="424" width="32" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="56" y="432" fill="#2d3142" font-size="7" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.08em">REPLY</text>
+      <text x="112" y="460" fill="#2d3142" font-size="12" font-weight="600"
+            font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">回信注入会话 A</text>
+      <text x="112" y="476" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">autoWake followup</text>
+      <text x="112" y="488" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">or next-turn park</text>
+
+      <!-- ── Legend (bottom strip) ─────────────────────────────────────────── -->
+      <line x1="32" y1="536" x2="1184" y2="536" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="32" y="564" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace"
+            letter-spacing="0.14em">LEGEND</text>
+      <rect x="120" y="556" width="16" height="12" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <text x="144" y="564" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">FOCAL GATE</text>
+      <rect x="264" y="556" width="16" height="12" rx="2" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <text x="288" y="564" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">PEER SESSION</text>
+      <rect x="432" y="556" width="16" height="12" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="456" y="564" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">PLUGIN STEP</text>
+      <rect x="584" y="556" width="16" height="12" rx="2" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <text x="608" y="564" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">BLOCKED</text>
+      <line x1="712" y1="560" x2="744" y2="560" stroke="#4f5d75" stroke-width="1" marker-end="url(#messenger-arrow)"/>
+      <text x="752" y="564" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">DELIVERY</text>
+      <line x1="880" y1="560" x2="912" y2="560" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#messenger-arrow)"/>
+      <text x="920" y="564" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">REPLY RETURN</text>
+    </svg>
+
+    <p class="colophon">dsh-me · src/plugins/session-messenger · decision.ts + index.ts · diagram-design</p>
+  </div>
+</body>
+</html>

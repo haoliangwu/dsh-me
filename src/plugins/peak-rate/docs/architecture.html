@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>peak-rate architecture</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f5f5f5;   /* white-smoke */
+      --color-ink:     #2d3142;   /* jet-black */
+      --color-muted:   #4f5d75;   /* blue-slate */
+      --color-accent:  #eb6c36;   /* atomic-tangerine */
+      --font-sans:     'Geist', 'Noto Sans SC', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Sans SC', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+
+    .frame { max-width: 1200px; width: 100%; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+
+    svg { width: 100%; min-width: 900px; display: block; }
+
+    .colophon {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      letter-spacing: 0.04em;
+      color: var(--color-muted);
+      border-top: 1px solid rgba(45,49,66,0.12);
+      margin-top: 1.5rem;
+      padding-top: 0.75rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Architecture · Diagram Design</p>
+    <h1>peak-rate 🔥 2× composer badge architecture</h1>
+
+    <svg viewBox="0 0 1000 552" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="peak-rate-title peak-rate-desc">
+      <title id="peak-rate-title">peak-rate plugin architecture</title>
+      <desc id="peak-rate-desc">Architecture diagram of the peak-rate plugin: profile config and the holiday-cn feed feed the host RPC handler, which serves providers, peak windows, multiplier and holiday dates over the /peak-rate Connection RPC channel to the browser, where the policy store, the session model directory and the peak evaluation drive the PeakRateBadge rendered in the composer trailing row.</desc>
+      <defs>
+        <marker id="peak-rate-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="peak-rate-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="peak-rate-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+      <!-- Zones -->
+      <rect x="24" y="80" width="400" height="376" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <rect x="40" y="84" width="80" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="80" y="92" fill="rgba(45,49,66,0.40)" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.14em">HOST · NODE</text>
+      <rect x="576" y="80" width="400" height="376" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <rect x="592" y="84" width="136" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="660" y="92" fill="rgba(45,49,66,0.40)" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.14em">BROWSER · WEB CLIENT</text>
+
+      <!-- Arrows (drawn before boxes) -->
+      <path d="M128,184 V280" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#peak-rate-arrow)"/>
+      <path d="M328,184 V280" fill="none" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#peak-rate-arrow-link)"/>
+      <path d="M408,316 H440" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#peak-rate-arrow)"/>
+      <path d="M560,316 H564 Q572,316 572,308 V156 Q572,148 580,148 H592" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#peak-rate-arrow)"/>
+      <path d="M644,184 V256" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#peak-rate-arrow)"/>
+      <path d="M880,184 V256" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#peak-rate-arrow)"/>
+      <path d="M752,292 H800" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#peak-rate-arrow)"/>
+      <path d="M716,184 V228 Q716,236 724,236 H840 Q848,236 848,244 V256" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#peak-rate-arrow)"/>
+      <path d="M880,328 V368" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#peak-rate-arrow)"/>
+
+      <!-- Arrow labels (masks, 8px gap from stroke) -->
+      <rect x="136" y="216" width="48" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="160" y="224" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">CONFIG</text>
+      <rect x="336" y="216" width="56" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="364" y="224" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">HOLIDAYS</text>
+      <rect x="508" y="216" width="56" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="536" y="224" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">POLICY</text>
+      <rect x="652" y="216" width="56" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="680" y="224" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">WINDOWS</text>
+      <rect x="816" y="216" width="56" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="844" y="224" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">CURRENT</text>
+      <rect x="732" y="216" width="64" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="764" y="224" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">PROVIDERS</text>
+      <rect x="756" y="272" width="40" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="776" y="280" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">PEAK?</text>
+      <rect x="888" y="340" width="56" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="916" y="348" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">RENDER</text>
+
+      <!-- Nodes -->
+      <!-- N1 profile config (store) -->
+      <rect x="48" y="112" width="160" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="48" y="112" width="160" height="72" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="56" y="120" width="48" height="12" rx="2" fill="none" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="80" y="128" fill="rgba(79,93,117,0.80)" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CONFIG</text>
+      <text x="128" y="156" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">Profile config</text>
+      <text x="128" y="172" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">cordis.patch.yml</text>
+
+      <!-- N2 holiday-cn feed (external) -->
+      <rect x="248" y="112" width="160" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="248" y="112" width="160" height="72" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <rect x="256" y="120" width="32" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.30)" stroke-width="0.8"/>
+      <text x="272" y="128" fill="rgba(45,49,66,0.70)" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">EXT</text>
+      <text x="328" y="156" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">holiday-cn feed</text>
+      <text x="328" y="172" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">NateScarlet/holiday-cn</text>
+
+      <!-- N3 host RPC handler (backend) -->
+      <rect x="48" y="280" width="360" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="48" y="280" width="360" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="56" y="288" width="32" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="72" y="296" fill="rgba(45,49,66,0.80)" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">HOST</text>
+      <text x="228" y="324" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">Host RPC handler</text>
+      <text x="228" y="340" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">serveRpcChannel · /peak-rate</text>
+
+      <!-- N4 Connection RPC channel (focal) -->
+      <rect x="440" y="280" width="120" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="440" y="280" width="120" height="72" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <rect x="448" y="288" width="32" height="12" rx="2" fill="none" stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+      <text x="464" y="296" fill="rgba(235,108,54,0.85)" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">RPC</text>
+      <text x="500" y="324" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">RPC channel</text>
+      <text x="500" y="340" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">/peak-rate</text>
+
+      <!-- N5 client policy store -->
+      <rect x="592" y="112" width="160" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="592" y="112" width="160" height="72" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="600" y="120" width="40" height="12" rx="2" fill="none" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="620" y="128" fill="rgba(79,93,117,0.80)" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">STORE</text>
+      <text x="672" y="156" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">Policy store</text>
+      <text x="672" y="172" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">client/index.ts</text>
+
+      <!-- N6 model directory -->
+      <rect x="800" y="112" width="160" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="800" y="112" width="160" height="72" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="808" y="120" width="40" height="12" rx="2" fill="none" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="828" y="128" fill="rgba(79,93,117,0.80)" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">STATE</text>
+      <text x="880" y="156" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">Model directory</text>
+      <text x="880" y="172" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">ui-model-selection</text>
+
+      <!-- N7 peak evaluation (focal) -->
+      <rect x="592" y="256" width="160" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="592" y="256" width="160" height="72" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <rect x="600" y="264" width="40" height="12" rx="2" fill="none" stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+      <text x="620" y="272" fill="rgba(235,108,54,0.85)" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">LOGIC</text>
+      <text x="672" y="300" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">Peak evaluation</text>
+      <text x="672" y="316" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">isPeakRate() · 60s</text>
+
+      <!-- N8 PeakRateBadge -->
+      <rect x="800" y="256" width="160" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="800" y="256" width="160" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="808" y="264" width="24" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="820" y="272" fill="rgba(45,49,66,0.80)" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">UI</text>
+      <text x="880" y="300" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">PeakRateBadge</text>
+      <text x="880" y="316" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">React · slots entry</text>
+
+      <!-- N9 composer trailing row -->
+      <rect x="592" y="368" width="368" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="592" y="368" width="368" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="600" y="376" width="32" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="616" y="384" fill="rgba(45,49,66,0.80)" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">OUT</text>
+      <text x="776" y="412" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">Composer trailing row</text>
+      <text x="776" y="428" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">conversation.input.right</text>
+
+      <!-- Legend (horizontal bottom strip) -->
+      <line x1="32" y1="504" x2="968" y2="504" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="32" y="520" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+      <rect x="120" y="508" width="16" height="12" rx="2" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="0.8"/>
+      <text x="144" y="520" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">STORE</text>
+      <rect x="276" y="508" width="16" height="12" rx="2" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="0.8"/>
+      <text x="300" y="520" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">EXTERNAL</text>
+      <rect x="444" y="508" width="16" height="12" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="0.8"/>
+      <text x="468" y="520" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">FOCAL</text>
+      <line x1="588" y1="516" x2="616" y2="516" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#peak-rate-arrow)"/>
+      <text x="624" y="520" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">DATA FLOW</text>
+      <line x1="756" y1="516" x2="784" y2="516" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#peak-rate-arrow-link)"/>
+      <text x="792" y="520" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">HTTP FEED</text>
+    </svg>
+
+    <footer class="colophon">peak-rate · dsh-me plugin · host RPC /peak-rate → client badge · diagram-design skill</footer>
+  </div>
+</body>
+</html>

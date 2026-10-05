@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>dsh-caveman Architecture</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f5f5f5;   /* white-smoke */
+      --color-ink:     #2d3142;   /* jet-black */
+      --color-muted:   #4f5d75;   /* blue-slate */
+      --color-accent:  #eb6c36;   /* atomic-tangerine */
+      --color-link:    #2e5aa8;
+      --font-sans:     'Geist', 'Noto Sans SC', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+
+    .frame { max-width: 1200px; width: 100%; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+
+    svg { width: 100%; min-width: 900px; display: block; }
+
+    footer {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      letter-spacing: 0.06em;
+      color: var(--color-muted);
+      border-top: 1px solid rgba(45,49,66,0.12);
+      margin-top: 1.5rem;
+      padding-top: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Architecture · Diagram Design</p>
+    <h1>dsh-caveman Architecture</h1>
+
+    <svg viewBox="0 0 1120 580" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="caveman-title caveman-desc">
+      <title id="caveman-title">dsh-caveman plugin architecture</title>
+      <desc id="caveman-desc">Architecture diagram of the dsh-caveman plugin: the /caveman command atomically persists a level flag file, and every turn the plugin's registered system-prompt section re-reads that flag plus the level-filtered SKILL.md through its pure decision core before DSH assembles the session system prompt.</desc>
+      <defs>
+        <marker id="caveman-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="caveman-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="caveman-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+      <!-- Zones (painted first) -->
+      <rect x="40" y="128" width="624" height="128" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <rect x="44" y="132" width="80" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="84" y="140" fill="rgba(45,49,66,0.40)" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.14em">COMMAND PATH</text>
+
+      <rect x="896" y="256" width="208" height="240" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <rect x="900" y="260" width="72" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="936" y="268" fill="rgba(45,49,66,0.40)" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.14em">DSH HARNESS</text>
+
+      <!-- Arrows (before boxes) -->
+      <path d="M 176,192 H 240" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#caveman-arrow)"/>
+      <path d="M 400,192 H 472" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#caveman-arrow)"/>
+      <path d="M 312,224 V 240 Q 312,248 320,248 H 496 Q 504,248 504,256 V 288" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#caveman-arrow)"/>
+      <path d="M 552,224 V 288" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#caveman-arrow)"/>
+      <path d="M 208,312 H 472" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#caveman-arrow)"/>
+      <path d="M 208,448 H 432 Q 440,448 440,440 V 344 Q 440,336 448,336 H 472" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#caveman-arrow)"/>
+      <path d="M 632,320 H 696" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#caveman-arrow)"/>
+      <path d="M 856,320 H 920" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#caveman-arrow)"/>
+      <path d="M 1000,352 V 416" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#caveman-arrow)"/>
+      <path d="M 264,160 V 104 Q 264,96 272,96 H 992 Q 1000,96 1000,104 V 288" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#caveman-arrow)"/>
+
+      <!-- Arrow labels (masks, 6-10px gap from strokes) -->
+      <rect x="196" y="172" width="40" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="216" y="180" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">COMMAND</text>
+
+      <rect x="408" y="172" width="56" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="436" y="180" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">WRITE FLAG</text>
+
+      <rect x="384" y="228" width="48" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="408" y="236" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">CLASSIFY</text>
+
+      <rect x="560" y="248" width="56" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="588" y="256" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">READ LEVEL</text>
+
+      <rect x="320" y="292" width="40" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="340" y="300" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">DEFAULT</text>
+
+      <rect x="300" y="428" width="48" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="324" y="436" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">SKILL.MD</text>
+
+      <rect x="640" y="292" width="48" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="664" y="300" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">FILTERED</text>
+
+      <rect x="868" y="292" width="40" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="888" y="300" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">APPEND</text>
+
+      <rect x="1008" y="376" width="48" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="1032" y="384" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">PER-TURN</text>
+
+      <rect x="612" y="76" width="40" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="632" y="84" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">REFRESH</text>
+
+      <!-- Nodes (after labels) -->
+
+      <!-- input -->
+      <rect x="64" y="160" width="112" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="64" y="160" width="112" height="64" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <text x="120" y="188" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">/caveman 命令</text>
+      <text x="120" y="204" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">status|set|off</text>
+
+      <!-- handler -->
+      <rect x="240" y="160" width="160" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="240" y="160" width="160" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="320" y="188" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">命令处理器</text>
+      <text x="320" y="204" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">commands.register</text>
+
+      <!-- flag (focal) -->
+      <rect x="472" y="160" width="160" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="472" y="160" width="160" height="64" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <text x="552" y="188" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">档位 flag 文件</text>
+      <text x="552" y="204" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">~/.dsh/.caveman-active</text>
+
+      <!-- config (optional) -->
+      <rect x="64" y="288" width="144" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="64" y="288" width="144" height="64" rx="6" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="136" y="316" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">配置默认档</text>
+      <text x="136" y="332" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">Config.defaultLevel</text>
+
+      <!-- pure -->
+      <rect x="472" y="288" width="160" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="472" y="288" width="160" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="552" y="316" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">纯决策核心 pure.ts</text>
+      <text x="552" y="332" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">filterRuleset · banner</text>
+
+      <!-- section (focal) -->
+      <rect x="696" y="288" width="160" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="696" y="288" width="160" height="64" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <text x="776" y="316" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">注入段</text>
+      <text x="776" y="332" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">dsh-caveman:rules · 10300</text>
+
+      <!-- service (external) -->
+      <rect x="920" y="288" width="160" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="920" y="288" width="160" height="64" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <text x="1000" y="316" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">系统提示服务</text>
+      <text x="1000" y="332" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">ctx.systemPrompt</text>
+
+      <!-- skill (external) -->
+      <rect x="64" y="416" width="144" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="64" y="416" width="144" height="64" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <text x="136" y="444" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">规则源 SKILL.md</text>
+      <text x="136" y="460" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">project &gt; global</text>
+
+      <!-- loop (external) -->
+      <rect x="920" y="416" width="160" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="920" y="416" width="160" height="64" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <text x="1000" y="444" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">DSH agent loop</text>
+      <text x="1000" y="460" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">external · assembly</text>
+
+      <!-- Legend strip -->
+      <line x1="40" y1="536" x2="1080" y2="536" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="40" y="552" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+
+      <rect x="140" y="544" width="16" height="12" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="0.8"/>
+      <text x="164" y="552" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">FOCAL</text>
+
+      <rect x="228" y="544" width="16" height="12" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="0.8"/>
+      <text x="252" y="552" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">COMPONENT</text>
+
+      <rect x="340" y="544" width="16" height="12" rx="2" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="0.8"/>
+      <text x="364" y="552" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">INPUT</text>
+
+      <rect x="428" y="544" width="16" height="12" rx="2" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.20)" stroke-width="0.8" stroke-dasharray="4,3"/>
+      <text x="452" y="552" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">OPTIONAL</text>
+
+      <rect x="532" y="544" width="16" height="12" rx="2" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="0.8"/>
+      <text x="556" y="552" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">EXTERNAL</text>
+
+      <line x1="636" y1="548" x2="664" y2="548" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#caveman-arrow)"/>
+      <text x="672" y="552" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">DATA FLOW</text>
+
+      <line x1="760" y1="548" x2="788" y2="548" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="796" y="552" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">ASYNC</text>
+    </svg>
+
+    <footer>dsh-me · src/plugins/caveman — assembled per the diagram-design skill (architecture type)</footer>
+  </div>
+</body>
+</html>

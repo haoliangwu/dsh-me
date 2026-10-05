@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>dsh-reference · Architecture</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f5f5f5;   /* white-smoke */
+      --color-ink:     #2d3142;   /* jet-black */
+      --color-muted:   #4f5d75;   /* blue-slate */
+      --color-soft:    #7a8399;   /* lighter slate */
+      --color-accent:  #eb6c36;   /* atomic-tangerine */
+      --font-sans:     'Geist', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Sans SC', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+
+    .frame { max-width: 1200px; width: 100%; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+
+    svg { width: 100%; min-width: 900px; display: block; }
+
+    .footer {
+      margin-top: 1.5rem;
+      padding-top: 1rem;
+      border-top: 1px solid rgba(45,49,66,0.10);
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.06em;
+      color: var(--color-soft);
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Architecture · dsh-me plugin</p>
+    <h1>dsh-reference 插件架构</h1>
+
+    <svg viewBox="0 0 1000 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="reference-title reference-desc">
+      <title id="reference-title">dsh-reference 插件架构</title>
+      <desc id="reference-desc">参考插件的双半结构：浏览器设置页把保存写入 volatile 引用表，宿主在装配与更新时校验该表、后台物化 Git 缓存，动态广告进系统提示，@ 触发源以纯文本提及挂载给 agent。</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+      <!-- Zones: background, then arrows, then labels, then nodes. -->
+      <rect x="32" y="64" width="192" height="288" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <rect x="40" y="68" width="80" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="80" y="76" fill="rgba(45,49,66,0.40)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.14em">BROWSER CLIENT</text>
+
+      <rect x="448" y="64" width="448" height="288" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <rect x="456" y="68" width="72" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="492" y="76" fill="rgba(45,49,66,0.40)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.14em">HOST PROCESS</text>
+
+      <!-- Arrows (drawn before boxes). -->
+      <!-- a · settings save crosses the projection boundary -->
+      <line x1="208" y1="136" x2="272" y2="136" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- b · volatileForm projection lands in the plain dict -->
+      <line x1="432" y1="136" x2="496" y2="136" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- c · the same table is validated at apply and on update -->
+      <line x1="656" y1="136" x2="720" y2="136" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- d · the prompt section re-reads the table at every assembly -->
+      <path d="M 496,160 H 480 Q 472,160 472,168 V 448 Q 472,456 480,456 H 496" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- e · apply + loader/volatile-update re-run materialization -->
+      <line x1="576" y1="176" x2="576" y2="256" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- f · clone / fetch / reset into the cache directory -->
+      <line x1="656" y1="296" x2="720" y2="296" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- h · auto-include entries advertised into the system prompt -->
+      <line x1="656" y1="456" x2="720" y2="456" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- j · the @ trigger source shares the form snapshot -->
+      <line x1="128" y1="176" x2="128" y2="256" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- g · plain-text mention reaches the agent (bridged over d) -->
+      <path d="M 160,336 V 368 Q 160,376 168,376 H 464 a 8,8 0 0,1 16,0 H 792 Q 800,376 800,384 V 416" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- Arrow labels: opaque masks, 8px visible gap from every stroke. -->
+      <rect x="224" y="116" width="32" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="240" y="124" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">SAVE</text>
+
+      <rect x="440" y="116" width="48" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="464" y="124" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">VOLATILE</text>
+
+      <rect x="664" y="116" width="48" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="688" y="124" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">VALIDATE</text>
+
+      <rect x="480" y="224" width="56" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="508" y="232" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">READ FRESH</text>
+
+      <rect x="584" y="208" width="64" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="616" y="216" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">MATERIALIZE</text>
+
+      <rect x="672" y="276" width="32" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="688" y="284" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">CLONE</text>
+
+      <rect x="664" y="436" width="48" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="688" y="444" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">ADVERTISE</text>
+
+      <rect x="136" y="208" width="48" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="160" y="216" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">SNAPSHOT</text>
+
+      <rect x="320" y="356" width="48" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="344" y="364" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">MENTION @</text>
+
+      <!-- Nodes. -->
+      <!-- S1 · client settings section (input) -->
+      <rect x="48" y="96" width="160" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="48" y="96" width="160" height="80" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="56" y="104" width="40" height="12" rx="2" fill="none" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="76" y="112" fill="rgba(122,131,153,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CLIENT</text>
+      <text x="128" y="144" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">References 设置页</text>
+      <text x="128" y="160" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">configForms · RPC</text>
+
+      <!-- S2 · client @ trigger source (input) -->
+      <rect x="48" y="256" width="160" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="48" y="256" width="160" height="80" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="56" y="264" width="40" height="12" rx="2" fill="none" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="76" y="272" fill="rgba(122,131,153,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CLIENT</text>
+      <text x="128" y="304" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">@ 触发源</text>
+      <text x="128" y="320" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">trigger @ · mention</text>
+
+      <!-- S3 · settings form projection (external boundary) -->
+      <rect x="272" y="96" width="160" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="272" y="96" width="160" height="80" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <rect x="280" y="104" width="48" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="304" y="112" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">BOUNDARY</text>
+      <text x="352" y="144" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">Settings 投影</text>
+      <text x="352" y="160" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">volatileForm → toJSON</text>
+
+      <!-- S4 · volatile config table (focal) -->
+      <rect x="496" y="96" width="160" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="496" y="96" width="160" height="80" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <rect x="504" y="104" width="40" height="12" rx="2" fill="none" stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+      <text x="524" y="112" fill="rgba(235,108,54,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CONFIG</text>
+      <text x="576" y="144" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">Volatile Config 表</text>
+      <text x="576" y="160" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">z.dict(entryShape)</text>
+
+      <!-- S5 · table validation (backend) -->
+      <rect x="720" y="96" width="160" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="720" y="96" width="160" height="80" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="728" y="104" width="48" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="752" y="112" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">VALIDATE</text>
+      <text x="800" y="144" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">引用表校验</text>
+      <text x="800" y="160" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">validateReferenceTable</text>
+
+      <!-- S6 · git materializer (backend) -->
+      <rect x="496" y="256" width="160" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="496" y="256" width="160" height="80" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="504" y="264" width="24" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="516" y="272" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">GIT</text>
+      <text x="576" y="304" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">Git 物化器</text>
+      <text x="576" y="320" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">clone · fetch · reset</text>
+
+      <!-- S7 · git cache (store) -->
+      <rect x="720" y="256" width="160" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="720" y="256" width="160" height="80" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="728" y="264" width="32" height="12" rx="2" fill="none" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="744" y="272" fill="rgba(79,93,117,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CACHE</text>
+      <text x="800" y="304" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">Git 缓存</text>
+      <text x="800" y="320" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">&lt;cacheDir&gt;/&lt;alias&gt;</text>
+
+      <!-- S8 · prompt advertisement section (focal) -->
+      <rect x="496" y="416" width="160" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="496" y="416" width="160" height="80" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <rect x="504" y="424" width="40" height="12" rx="2" fill="none" stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+      <text x="524" y="432" fill="rgba(235,108,54,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PROMPT</text>
+      <text x="576" y="464" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">系统提示广告</text>
+      <text x="576" y="480" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">dsh-reference:rules</text>
+
+      <!-- S9 · agent-facing output (external) -->
+      <rect x="720" y="416" width="160" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="720" y="416" width="160" height="80" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <rect x="728" y="424" width="40" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="748" y="432" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">OUTPUT</text>
+      <text x="800" y="464" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans SC', sans-serif" text-anchor="middle">Agent 系统提示</text>
+      <text x="800" y="480" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">&lt;available_references&gt;</text>
+
+      <!-- Legend strip (bottom, hairline separator). -->
+      <line x1="40" y1="536" x2="960" y2="536" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="40" y="560" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.18em">LEGEND</text>
+
+      <rect x="120" y="552" width="16" height="12" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <text x="144" y="560" fill="#4f5d75" font-size="8" font-family="'Geist', sans-serif">Focal node</text>
+
+      <rect x="264" y="552" width="16" height="12" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="288" y="560" fill="#4f5d75" font-size="8" font-family="'Geist', sans-serif">Host backend</text>
+
+      <rect x="400" y="552" width="16" height="12" rx="2" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <text x="424" y="560" fill="#4f5d75" font-size="8" font-family="'Geist', sans-serif">Store</text>
+
+      <rect x="496" y="552" width="16" height="12" rx="2" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <text x="520" y="560" fill="#4f5d75" font-size="8" font-family="'Geist', sans-serif">Client input</text>
+
+      <rect x="624" y="552" width="16" height="12" rx="2" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <text x="648" y="560" fill="#4f5d75" font-size="8" font-family="'Geist', sans-serif">External boundary</text>
+
+      <line x1="768" y1="556" x2="796" y2="556" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <text x="804" y="560" fill="#4f5d75" font-size="8" font-family="'Geist', sans-serif">Data flow</text>
+    </svg>
+
+    <div class="footer">
+      <span>dsh-me · src/plugins/reference</span>
+      <span>diagram design · architecture</span>
+    </div>
+  </div>
+</body>
+</html>
