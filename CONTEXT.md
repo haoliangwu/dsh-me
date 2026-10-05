@@ -10,10 +10,13 @@ Domain glossary for dsh-me. Terms resolve here; implementation details stay in s
 
 ## 通知域（dsh-notification）
 
-- **通知触发**: 会话生命周期中值得弹桌面通知的三个时刻：提问、完成、错误。
+- **通知触发**: 会话生命周期中值得弹桌面通知的四个时刻：审批、提问、完成、错误。
+- **审批**: 工具请求权限审批（`approval/request` waterfall → `PendingApproval`，sessionStatus pending-interaction kind `approval`）。与提问同挂 pending-interaction 面；正文 = 工具名 + 原因，标题标记「审批」。
 - **提问**: agent 通过 user-questions 机制向用户发起的询问（`user-questions/request`，agent 专属 ask 事件）。与回合结束无关，回合中途也会发生。
 - **完成**: agent 回合正常结束（`turn/end`，completed；max-tokens 视为完成但注明截断）。
 - **错误**: agent 回合以失败告终（`turn/end`，error，携带 LlmFailure）。
+- **音型**: 每个触发配专属 Web Audio 音型——完成/提问双音上行、错误双音下行、审批三连音上行，听声即辨。
+- **桌面通知通道**: Electron 壳（`dsh-*://`）渲染进程 HTML5 Notification 不弹 macOS 横幅，改经 host `/notification` `notify` 端点用 `osascript display notification` 弹原生通知；浏览器 profile 走标准 Notification API。
 - **静默策略**: 页面可见时不打扰 — 仅在页面隐藏/失焦时弹通知。
 
 ## 会话通信域（session-messenger）
