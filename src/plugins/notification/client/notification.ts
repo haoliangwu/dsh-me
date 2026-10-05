@@ -5,15 +5,9 @@
  * every branch here without any harness fixtures.
  */
 import { assistantTextOfTurn } from '../../../shared/assistant-text'
+import type { TurnEndReasonShape } from '../../../shared/turn-end'
 
-/** The reason payload of a durable `turn/end` event (structural). */
-export interface TurnEndReasonShape {
-  readonly kind: string
-  /** Internal cause carried by `aborted` reasons. */
-  readonly reason?: { readonly kind?: string }
-  /** LlmFailure fields; `code` present on error reasons. */
-  readonly error?: { readonly message?: string; readonly code?: string }
-}
+export type { TurnEndReasonShape } from '../../../shared/turn-end'
 
 /** One entry of the client session event window (structural). */
 export interface SessionEventLikeEntryShape {

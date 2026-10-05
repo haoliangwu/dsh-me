@@ -25,7 +25,7 @@ import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 // Type-only: the browser Connection handle face for the host path-existence probe.
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
-import type { ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
+import type { RpcResult } from '../../../shared/rpc-types'
 import type { InputTriggerServiceContract, InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { ConfigForm, ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { ReferenceEntry, ReferenceTable } from '../pure.ts'

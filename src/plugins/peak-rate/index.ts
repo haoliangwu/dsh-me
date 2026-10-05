@@ -14,7 +14,7 @@
  * empty, so the plugin never blocks boot and never throws.
  */
 import type { Context } from '@deepseek-ai/cordis'
-import type { ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
+import type { RpcResult } from '../../shared/rpc-types'
 import z from '@deepseek-ai/schemastery'
 // Type-only import activates the optional webServer Context declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'

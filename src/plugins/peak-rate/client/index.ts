@@ -25,7 +25,7 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: pulls the ui-model-selection directory types + ctx.modelDirectories merge.
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
-import type { ConnectionRpcResult as RpcResult } from '@deepseek-ai/dsh-client-connection'
+import type { RpcResult } from '../../../shared/rpc-types'
 import { PeakRateBadge, type ConfigSource, type PluginConfig } from './PeakRateBadge.tsx'
 import { en, zh, type PeakKey } from './locales.ts'
 

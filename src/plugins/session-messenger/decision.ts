@@ -4,6 +4,7 @@
  * calling-message hop, and config through these functions; specs exercise
  * every branch here without any harness fixtures.
  */
+import type { TurnEndReasonShape } from '../../shared/turn-end'
 
 /** Message-source kind stamped on every relay delivered by this plugin. */
 export const MESSAGE_SOURCE_KIND = 'session-messenger'
@@ -223,13 +224,7 @@ export function planDelivery(input: DeliveryPlanInput): DeliveryPlan {
 
 // ── reply routing (ticket 03) ────────────────────────────────────────────────
 
-/** The reason payload of a durable `turn/end` event (structural). */
-export interface TurnEndReasonShape {
-  readonly kind: string
-  /** Internal cause carried by `aborted` reasons (user/parent/hook/disposed/legacy). */
-  readonly reason?: { readonly kind?: string }
-  readonly error?: { readonly message?: string }
-}
+export type { TurnEndReasonShape } from '../../shared/turn-end'
 
 /** Which end-reason policy a reply follows (conservative: only the three spec'd kinds reply). */
 export type ReplyPolicy = 'assistant' | 'error' | 'none'
