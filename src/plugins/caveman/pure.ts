@@ -22,7 +22,9 @@ export function isCavemanLevel(value: unknown): value is CavemanLevel {
 
 /** Parse a raw flag/content string into a level; undefined for absent or invalid input. */
 export function parseLevel(value: string | undefined): CavemanLevel | undefined {
-  return value !== undefined && isCavemanLevel(value.trim()) ? value.trim() : undefined
+  if (value === undefined) return undefined
+  const trimmed = value.trim()
+  return isCavemanLevel(trimmed) ? trimmed : undefined
 }
 
 /**

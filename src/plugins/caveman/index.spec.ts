@@ -7,7 +7,7 @@ describe('Config schema', () => {
   })
 
   it('accepts every legal level', () => {
-    for (const level of ['lite', 'full', 'ultra', 'wenyan-lite', 'wenyan-full', 'wenyan-ultra', 'off']) {
+    for (const level of ['lite', 'full', 'ultra', 'wenyan-lite', 'wenyan-full', 'wenyan-ultra', 'off'] as const) {
       expect(Config({ defaultLevel: level })).toEqual({ defaultLevel: level })
     }
   })

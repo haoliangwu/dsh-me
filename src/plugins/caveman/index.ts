@@ -39,7 +39,7 @@ export interface Config {
 }
 
 export const Config = z.object({
-  defaultLevel: z.union(CAVEMAN_LEVELS as const).default(DEFAULT_LEVEL),
+  defaultLevel: z.union([...CAVEMAN_LEVELS]).default(DEFAULT_LEVEL),
 })
 
 /** Flag file location (spec): `~/.dsh/.caveman-active`. */

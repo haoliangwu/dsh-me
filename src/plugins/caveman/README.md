@@ -44,3 +44,10 @@ Intensity 表只留当前档行，示例只留当前档）
 ## 安装配置
 
 见[根 README](../../../README.md)的「安装与更新」。无必填配置，装上即用。
+
+## Known Limitations and Deferred Work
+
+- **路径硬编码**：flag 与全局 SKILL.md 路径（`~/.agents/skills/caveman/SKILL.md`）不可 Config 覆写（spec 决策 7 有意取舍）；多机部署想改路径需改码。
+- **项目级 SKILL.md 注入面**：任一 session cwd 下存在 `.agents/skills/caveman/SKILL.md` 即每次组装注入系统提示（无确认/白名单）。打开陌生仓库即生效，属有意设计（自标定规则），风险自知。
+- **section order 10300 占位**：官方命名槽已到 persona 后缀 10200，10300 为合法尾位；若官方新增尾部位命名槽，需迁移至 `getSectionOrder`。
+- **共享 SKILL.md 格式隐式耦合**：档位过滤正则只保留 `| **level** |` 表行与 `- level:` 示例行；SKILL.md 演化若引入同样式前缀行会在非当前档被静默删除（现格式安全）。
