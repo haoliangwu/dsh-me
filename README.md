@@ -15,7 +15,6 @@
 | [btw](src/plugins/btw/README.md) | `dsh-btw` | `/btw` 顺带一问，主日志零污染 |
 | [notification](src/plugins/notification/README.md) | `dsh-ui-notification` | 页面后台时桌面通知：完成 / 出错 / 提问 |
 | [peak-rate](src/plugins/peak-rate/README.md) | `dsh-ui-peak-rate` | 高峰计费时段 🔥 2× 提醒 |
-| [x-opencode-session-shim](src/plugins/x-opencode-session-shim/README.md) | `dsh-x-opencode-session-shim` | 补 `x-opencode-session` 头，消除 Console Go 400 |
 
 功能、示例与配置细节见各自 README。
 

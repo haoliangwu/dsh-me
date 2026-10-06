@@ -20,8 +20,6 @@
       name: dsh-me/plugins/memory
     - id: dsh-btw
       name: dsh-me/plugins/btw
-    - id: dsh-x-opencode-session-shim
-      name: dsh-me/plugins/x-opencode-session-shim
     - id: dsh-subagent-oc
       name: dsh-me/plugins/subagent-oc
     - id: dsh-reference
