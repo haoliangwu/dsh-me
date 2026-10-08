@@ -38,7 +38,7 @@ interface FakeEntry {
 type RpcImpl = (channel: string, endpoint: string, payload: unknown) => Promise<unknown>
 
 /** Boot the real apply over fake slots / connection / sessions services. */
-async function bench() {
+async function bench(probe: RpcImpl = () => Promise.resolve(okBlock(''))) {
   const ctx = new Context()
   const entries: FakeEntry[] = []
   const slots = {
@@ -49,7 +49,7 @@ async function bench() {
       return () => { entries.splice(entries.indexOf(entry), 1) }
     },
   }
-  const impls: RpcImpl[] = []
+  const impls: RpcImpl[] = [probe]
   const call = vi.fn((channel: string, endpoint: string, payload: unknown): Promise<unknown> => {
     const impl = impls.shift()
     if (impl === undefined) return Promise.reject(new Error('unexpected extra rpc call'))
@@ -96,13 +96,35 @@ describe('apply (tab registration)', () => {
   })
 
   it('registers the Memory tab after Chat/Trajectory with the MemoryView component', async () => {
-    const { fiber, entries } = await bench()
+    const { fiber, entries, call } = await bench()
     try {
       const entry = memoryEntry(entries)
       expect(entry.id).toBe('memory')
       expect(entry.order).toBe(20)
       expect(entry.label).toBe('Memory')
       expect(entry.component).toBe(MemoryView)
+      // The mount probe rode the same channel first: empty sessionId/cwd,
+      // one envelope, no store read.
+      expect(call).toHaveBeenCalledTimes(1)
+      expect(call).toHaveBeenCalledWith(CHANNEL, ENDPOINT_BLOCK, { sessionId: '', cwd: '' })
+    } finally {
+      await fiber.dispose()
+    }
+  })
+
+  it('registers no tab when the probe transport fails (host half disabled)', async () => {
+    const { fiber, entries } = await bench(() => Promise.reject(new Error('transport failure for /dsh-memory/block: HTTP 404')))
+    try {
+      expect(entries).toEqual([])
+    } finally {
+      await fiber.dispose()
+    }
+  })
+
+  it('registers no tab when the probe answers an error envelope', async () => {
+    const { fiber, entries } = await bench(() => Promise.resolve({ ok: false, error: { code: 'internal', message: 'boom', details: {} } }))
+    try {
+      expect(entries).toEqual([])
     } finally {
       await fiber.dispose()
     }
@@ -116,7 +138,7 @@ describe('apply (tab registration)', () => {
       expect(props.sessionId).toBe('s1')
       expect(props.cwd).toBe('/work/a')
       render(<MemoryView {...props} />)
-      await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+      await waitFor(() => expect(call).toHaveBeenCalledTimes(2))
       expect(call).toHaveBeenCalledWith(CHANNEL, ENDPOINT_BLOCK, { sessionId: 's1', cwd: '/work/a' })
       // The block lands in the markdown card — rendered by MarkdownText on
       // the preprocessed text (the stub renders it into the card).
@@ -358,7 +380,7 @@ describe('MemoryView states', () => {
       expect(await screen.findByText(MEMORY_VIEW_COPY.error)).toBeDefined()
       fireEvent.click(screen.getByText(MEMORY_VIEW_COPY.retry))
       await waitFor(() => expect(document.querySelector('[data-memory-block]')?.textContent).toBe(PREPPED_BLOCK))
-      expect(call).toHaveBeenCalledTimes(2)
+      expect(call).toHaveBeenCalledTimes(3)
     } finally {
       await fiber.dispose()
     }
@@ -386,8 +408,8 @@ describe('MemoryView states', () => {
       // Background refresh: the stale block stays visible until the new one lands…
       expect(document.querySelector('[data-memory-block]')?.textContent).toBe(PREPPED_BLOCK)
       await waitFor(() => expect(document.querySelector('[data-memory-block]')?.textContent).toContain('(note refreshed)'))
-      expect(call).toHaveBeenCalledTimes(2)
-      expect(call).toHaveBeenNthCalledWith(2, CHANNEL, ENDPOINT_BLOCK, { sessionId: 's1', cwd: '/work/a' })
+      expect(call).toHaveBeenCalledTimes(3)
+      expect(call).toHaveBeenNthCalledWith(3, CHANNEL, ENDPOINT_BLOCK, { sessionId: 's1', cwd: '/work/a' })
     } finally {
       await fiber.dispose()
     }

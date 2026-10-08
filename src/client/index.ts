@@ -4,6 +4,13 @@
  * One package ships ONE client bundle: this entry aggregates every plugin's
  * client half. A future plugin with UI adds its own sub-client under
  * src/plugins/<name>/client and is composed here via ctx.plugin().
+ *
+ * Per-profile mount gating cannot live here: the browser Loader creates this
+ * bundle's entry with no config (client-modules' `create` passes `{name}`
+ * only; WebBootEntry carries no host-row config), so a host row's
+ * `config:` never reaches the browser. A half that must be per-profile
+ * optional gates itself against host-side state (dsh-memory's client probes
+ * its channel and skips the tab when the host half is disabled).
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { apply as applyPeakRate, inject as peakRateInject } from '../plugins/peak-rate/client/index.ts'

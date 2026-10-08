@@ -14,6 +14,16 @@
  * Freshness: fetch on tab open (component mount) + one manual refresh
  * control; no polling, no push (spec). Export discipline:
  * packages/client/AGENTS.md.
+ *
+ * Mount gating: the browser Loader creates this bundle's entry with no
+ * config (WebBootEntry carries no host-row config; client-modules'
+ * `create` passes `{name}` only), so a profile that disables the dsh-memory
+ * host row cannot switch the tab off through config. Instead apply probes
+ * the same channel the tab reads (`block` with empty sessionId/cwd — the
+ * host answers `{block: ''}` without touching the store): a resolved ok
+ * envelope means the host half is mounted, and only then the tab registers.
+ * A transport rejection (route absent → HTTP 404) or an error envelope
+ * leaves the roster untouched — a disabled host half shows no Memory tab.
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 // Type-only: the 'conversation.view' SlotMap row (declared by ui-conversation)
@@ -36,6 +46,12 @@ export const ENDPOINT_BLOCK = 'block'
 /** The tab's position in the conversation view roster: after Chat (0) and Trajectory (10). */
 const VIEW_ORDER = 20
 
+/**
+ * Probe payload: empty sessionId/cwd make the host half answer `{block: ''}`
+ * without reading the store, so the probe costs one envelope round-trip.
+ */
+const PROBE_PAYLOAD = { sessionId: '', cwd: '' }
+
 /** The slices of the client Context this plugin reads (structural). */
 interface MemoryClientCtx {
   slots: ClientContext['slots']
@@ -51,25 +67,41 @@ interface MemoryClientCtx {
 export const inject = ['slots', 'connection', 'sessions']
 
 /**
- * Client plugin body: register the Memory tab in the conversation view
- * roster. The registration rides the slot service's effect wrapper, so
- * plugin unload removes the tab.
+ * Client plugin body: probe the host half's channel, then register the
+ * Memory tab in the conversation view roster (see the module header for the
+ * gating rationale). The registration rides the slot service's effect
+ * wrapper, so plugin unload removes the tab; a probe that settles after the
+ * fiber's disposal registers nothing.
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
   const scoped = ctx as unknown as MemoryClientCtx
-  ctx.slots.inject('conversation.view', () => ctx.slots.register({
-    name: 'conversation.view',
-    id: 'memory',
-    order: VIEW_ORDER,
-    label: 'Memory',
-    inject: (sessionId): MemoryViewInjected => {
-      const cwd = scoped.sessions.list.getSnapshot().byId[sessionId]?.cwd ?? ''
-      return {
-        sessionId,
-        cwd,
-        fetchBlock: () => scoped.connection.rpc.call(CHANNEL, ENDPOINT_BLOCK, { sessionId, cwd }) as Promise<RpcResult<MemoryBlockResponse>>,
+  void scoped.connection.rpc.call(CHANNEL, ENDPOINT_BLOCK, PROBE_PAYLOAD).then(
+    (result) => {
+      if (!result.ok) return
+      try {
+        ctx.slots.inject('conversation.view', () => ctx.slots.register({
+          name: 'conversation.view',
+          id: 'memory',
+          order: VIEW_ORDER,
+          label: 'Memory',
+          inject: (sessionId): MemoryViewInjected => {
+            const cwd = scoped.sessions.list.getSnapshot().byId[sessionId]?.cwd ?? ''
+            return {
+              sessionId,
+              cwd,
+              fetchBlock: () => scoped.connection.rpc.call(CHANNEL, ENDPOINT_BLOCK, { sessionId, cwd }) as Promise<RpcResult<MemoryBlockResponse>>,
+            }
+          },
+        }, MemoryView))
+      } catch {
+        // The fiber was disposed while the probe was in flight; the slot
+        // service rejects a registration from a dead context — nothing to do.
       }
     },
-  }, MemoryView))
+    () => {
+      // Host half absent (route missing → transport failure) or the
+      // transport itself failed: no Memory tab for this profile.
+    },
+  )
 }
