@@ -42,7 +42,7 @@ function tombstone(seq: number, turn: number, shadowed: number[]): SessionEventL
     turn, step: 0,
     message: {
       id: `t-${seq}`, role: 'system', content: [],
-      source: { kind: 'plugin', plugin: 'dsh-undo' },
+      source: { kind: 'plugin:dsh-undo' },
     },
   }, { op: 'replace' })
   return { ...base, event: { ...base.event, sourceEventSeqs: shadowed } }
@@ -165,7 +165,7 @@ describe('UndoSurface', () => {
       ...twoTurnLog(),
       tombstone(9, 2, [6, 7]),
       entry(10, 'turn/start', { turn: 1_000_002 }),
-      entry(11, 'user/message', { id: 'u2-copy', role: 'user', content: [{ type: 'text', text: 'second' }], source: { kind: 'plugin', plugin: 'dsh-undo' } }, 'append'),
+      entry(11, 'user/message', { id: 'u2-copy', role: 'user', content: [{ type: 'text', text: 'second' }], source: { kind: 'plugin:dsh-undo' } }, 'append'),
       entry(12, 'assistant/message', { turn: 1_000_002, step: 0, message: { id: 'a2-copy' } }, 'append'),
       entry(13, 'turn/end', { turn: 1_000_002 }),
       tombstone(14, 1_000_002, [11, 12]),

@@ -26,6 +26,15 @@ import type {
 export const UNDO_PLUGIN = 'dsh-undo'
 
 /**
+ * Producer-owned v4 source kind stamped on every tombstone. Format v4
+ * admission rejects the retired wrapper `kind: 'plugin'` ("format v4 message
+ * requires a producer-owned source kind") at every encode, and the v3→v4
+ * migration itself rewrites unknown plugin producers to `plugin:<id>` — so
+ * this is both the only legal and the migration-stable spelling.
+ */
+export const UNDO_SOURCE_KIND = `plugin:${UNDO_PLUGIN}`
+
+/**
  * Replayed turns are renumbered to `FAKE_TURN_BASE + originalTurn` so copies
  * are always identifiable (`turn >= 1_000_000`) and never collide with a real
  * turn number. A redo of an already-redone turn compounds the offset
@@ -55,10 +64,10 @@ export interface UndoTombstoneMeta {
 export function isUndoTombstone(event: SessionEvent): boolean {
   if (event.type !== 'system/message' || !isReplacementSurfaceEvent(event)) return false
   if (event.data.message.content.length !== 0) return false
-  // Tombstones carry a plugin source (`kind: 'plugin'` + plugin id), which the
-  // typed system-prompt source face does not model; read structurally.
-  const source = event.data.message.source as { kind?: unknown; plugin?: unknown }
-  return source.kind === 'plugin' && source.plugin === UNDO_PLUGIN
+  // Tombstones carry a producer-owned plugin source kind, which the typed
+  // system-prompt source face does not model; read structurally.
+  const source = event.data.message.source as { kind?: unknown }
+  return source.kind === UNDO_SOURCE_KIND
 }
 
 /**
@@ -268,15 +277,17 @@ export interface TombstoneBuildInput {
  * @returns the append payload (type/data/surface metadata).
  */
 export function buildTombstoneAppend(input: TombstoneBuildInput): TombstoneAppend {
-  // The source must be schema-clean: the persistence admission relabels every
-  // system/message to a user/message (rc.2 relationshipEvent) and audits the
-  // source members — anything beyond {kind, plugin, form, sections, summary}
-  // fails the flush ("user/message 0 source has unexpected member", the
-  // runtime lesson of 2026-09-23). The client derives the draft text from the
-  // turn attribution instead of tombstone metadata.
+  // The source must be schema-clean: the v4 persistence admission rejects the
+  // retired `kind: 'plugin'` wrapper on every encode/flush (the undo lesson of
+  // 2026-10-08: the append itself commits in memory, the flush throws, and
+  // every later turn's flush barrier fails with "format v4 message requires a
+  // producer-owned source kind" — the session is unusable for the host
+  // process). The producer-owned `plugin:<id>` kind passes admission and
+  // matches the v3→v4 migration's own rewriting, so pre-fix and post-fix
+  // tombstones recognize identically. The client derives the draft text from
+  // the turn attribution instead of tombstone metadata.
   const source = {
-    kind: 'plugin' as const,
-    plugin: UNDO_PLUGIN,
+    kind: UNDO_SOURCE_KIND,
   } as unknown as SystemMessage['source']
   const message: SystemMessage = {
     id: MessageId(randomUUID()),
@@ -448,17 +459,16 @@ function replayUserMessage(data: SessionEventMap['user/message']): UserMessage {
  * the fake `turn/start` before the replayed user/message (agent.ts appends
  * turn/start first), and a genuine user message always follows a real
  * turn/start, so the boundary attribution never collides. A legacy copy with
- * the retired plugin source marker (`source.kind === 'plugin'`,
- * `source.plugin === {@link UNDO_PLUGIN}`) also qualifies — belt-and-braces
- * for rows written before the marker was retired.
+ * the plugin source kind ({@link UNDO_SOURCE_KIND}) also qualifies —
+ * belt-and-braces for rows written before the marker was retired.
  * @param events - the session's event log (log order, seq-indexed).
  * @param event - the candidate user/message event.
  * @returns true for a replayed user message copy.
  */
 export function isReplayedUserMessage(events: readonly SessionEvent[], event: SessionEvent): boolean {
   if (event.type !== 'user/message') return false
-  const source = (event.data as { source?: { kind?: string; plugin?: string } } | undefined)?.source
-  if (source?.kind === 'plugin' && source.plugin === UNDO_PLUGIN) return true
+  const source = (event.data as { source?: { kind?: string } } | undefined)?.source
+  if (source?.kind === UNDO_SOURCE_KIND) return true
   const index = events.indexOf(event)
   if (index < 0) return false
   for (let cursor = index - 1; cursor >= 0; cursor -= 1) {

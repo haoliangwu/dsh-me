@@ -39,7 +39,7 @@ import {
   userMessageIdOfTurn,
 } from './pure.ts'
 import { appendRedoStep, performRedo, performUndo, type UndoHost } from './index.ts'
-import { assertV3RowAdmission } from '@deepseek-ai/dsh-session-format-v2-to-v3'
+import { assertV4RowAdmission } from '@deepseek-ai/dsh-session-format-v3-to-v4'
 
 /** Ids of one appended plain turn. */
 interface TurnIds {
@@ -334,10 +334,11 @@ describe('pure: tombstone recognition and construction (§2.1)', () => {
     expect(append.data.step).toBe(2)
     expect(append.data.message.role).toBe('system')
     expect(append.data.message.content).toEqual([])
-    // Schema-clean source: the persistence admission relabels system/message
-    // to user/message and audits members — anything beyond {kind, plugin,
-    // form, sections, summary} fails the flush (2026-09-23 lesson).
-    expect(append.data.message.source).toEqual({ kind: 'plugin', plugin: UNDO_PLUGIN })
+    // Schema-clean source: the v4 persistence admission rejects the retired
+    // `kind: 'plugin'` wrapper at every encode/flush (2026-10-08 lesson); the
+    // producer-owned `plugin:<id>` kind passes and is the migration-stable
+    // spelling.
+    expect(append.data.message.source).toEqual({ kind: `plugin:${UNDO_PLUGIN}` })
     expect(append.data.message.id).toBeTruthy()
     expect(append.surfaceOp).toEqual({ op: 'replace', startSeq: 10, endSeq: 13 })
     expect(append.sourceEventSeqs).toEqual([10, 11, 12, 13])
@@ -470,7 +471,7 @@ describe('pure: redo replay plan (§2.2)', () => {
     // A magic-context refresh of turn-1's user row.
     const refreshed = createUserMessage({
       content: [{ type: 'text', text: 'context refreshed' }],
-      source: { kind: 'plugin', plugin: 'magic-context' } as never,
+      source: { kind: 'plugin:magic-context' } as never,
     })
     session.append('user/message', refreshed, {
       surfaceOp: { op: 'replace', startSeq: SessionSeq(user1Seq), endSeq: SessionSeq(user1Seq) },
@@ -788,7 +789,7 @@ describe('endpoint: round trips on a real session', () => {
     const head = events[nodes[0] as number] as SessionEvent
     const tombstone = events[nodes[1] as number] as SessionEvent
     expect(head.type).toBe('system/message')
-    expect((head.data as { message: { source?: { plugin?: string } } }).message.source?.plugin).not.toBe('dsh-undo')
+    expect((head.data as { message: { source?: { kind?: string } } }).message.source?.kind).not.toBe(`plugin:${UNDO_PLUGIN}`)
     expect(tombstone.type).toBe('system/message')
     // The tombstone's replace range excludes the protected head seq.
     const lastTombstone = findLastUndoTombstone(events)
@@ -805,13 +806,15 @@ describe('endpoint: round trips on a real session', () => {
     expect(() => foldSurface(session.snapshotEvents())).not.toThrow()
   })
 
-  it('every appended event passes the persistence admission after undo/redo (schema-clean tombstone and copies)', async () => {
-    // 2026-09-23 production incident: the tombstone's message.source carried
-    // unaudited members (undoId, userMessageId) and every flush failed —
-    // zero persistence, export 500, turn failures. The relabel path
-    // (system/message → user/message) audits source members, so this gate
-    // must run over the full appended log. The fixture mirrors the REAL
-    // runtime shapes (steps are 1-based; the user message carries a
+  it('every appended event passes the v4 persistence admission after undo/redo (producer-owned tombstone source)', async () => {
+    // 2026-10-08 production incident: the tombstone's message.source carried
+    // the retired `kind:'plugin'` wrapper; the v4 admission rejects it at
+    // every encode/flush ("format v4 message requires a producer-owned source
+    // kind") while the in-memory append still commits — every later turn's
+    // flush barrier then failed and the session was unusable for the host
+    // process. This gate must run over the full appended log so the
+    // tombstone and every replay copy stay admissible. The fixture mirrors
+    // the REAL runtime shapes (steps are 1-based; the user message carries a
     // kind:'user' source), unlike the looser helpers above.
     const session = Session.create(SessionId('endpoint-admission-1'))
     session.append('turn/start', { turn: 1 })
@@ -848,10 +851,19 @@ describe('endpoint: round trips on a real session', () => {
     const redone = await performRedo(host, session.id)
     expect(redone.ok).toBe(true)
 
-    type AdmissionRow = Parameters<typeof assertV3RowAdmission>[0]
+    type AdmissionRow = Parameters<typeof assertV4RowAdmission>[0]
     for (const event of session.snapshotEvents()) {
-      expect(() => assertV3RowAdmission(event as unknown as AdmissionRow)).not.toThrow()
+      expect(() => assertV4RowAdmission(event as unknown as AdmissionRow)).not.toThrow()
     }
+    // Regression proof: the retired v3 wrapper `kind:'plugin'` is exactly
+    // what the v4 admission refuses — the 2026-10-08 failure mode.
+    const tombstone = session.snapshotEvents().find(isUndoTombstone) as SessionEvent<'system/message'>
+    expect(tombstone).toBeDefined()
+    const retired = structuredClone(tombstone.data) as unknown as { message: { source: Record<string, unknown> } }
+    retired.message.source = { kind: 'plugin', plugin: 'dsh-undo' }
+    expect(() => assertV4RowAdmission({ ...tombstone, data: retired } as unknown as AdmissionRow)).toThrow(
+      'format v4 message requires a producer-owned source kind',
+    )
   })
 
   it('appendRedoStep drops boundary events into the log without surface metadata', async () => {

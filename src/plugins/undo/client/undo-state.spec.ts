@@ -56,7 +56,7 @@ function tombstone(seq: number, turn: number, shadowed: number[]): SessionEventL
       turn, step: 0,
       message: {
         id: `t-${seq}`, role: 'system', content: [],
-        source: { kind: 'plugin', plugin: 'dsh-undo' },
+        source: { kind: 'plugin:dsh-undo' },
       },
     },
   })
@@ -66,7 +66,7 @@ function tombstone(seq: number, turn: number, shadowed: number[]): SessionEventL
 function copyUser(seq: number, id: string, text: string): SessionEventLikeEntryShape {
   return entry({
     seq, type: 'user/message', surfaceOp: 'append',
-    data: { id, role: 'user', content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: 'dsh-undo' } },
+    data: { id, role: 'user', content: [{ type: 'text', text }], source: { kind: 'plugin:dsh-undo' } },
   })
 }
 
@@ -90,27 +90,27 @@ describe('isUndoTombstoneShape', () => {
   it('recognizes the empty plugin-marked replacement', () => {
     expect(isUndoTombstoneShape({
       type: 'system/message', surfaceOp: { op: 'replace' }, sourceEventSeqs: [3],
-      data: { message: { content: [], source: { kind: 'plugin', plugin: 'dsh-undo' } } },
+      data: { message: { content: [], source: { kind: 'plugin:dsh-undo' } } },
     })).toBe(true)
   })
 
   it('rejects non-system types', () => {
     expect(isUndoTombstoneShape({
       type: 'assistant/message', surfaceOp: { op: 'replace' }, sourceEventSeqs: [3],
-      data: { message: { content: [], source: { kind: 'plugin', plugin: 'dsh-undo' } } },
+      data: { message: { content: [], source: { kind: 'plugin:dsh-undo' } } },
     })).toBe(false)
   })
 
   it('rejects append surface ops and missing citations', () => {
     expect(isUndoTombstoneShape({
       type: 'system/message', surfaceOp: 'append',
-      data: { message: { content: [], source: { kind: 'plugin', plugin: 'dsh-undo' } } },
+      data: { message: { content: [], source: { kind: 'plugin:dsh-undo' } } },
     })).toBe(false)
   })
 
   it('rejects non-empty content and foreign markers', () => {
     const base = { type: 'system/message', surfaceOp: { op: 'replace' }, sourceEventSeqs: [3] }
-    expect(isUndoTombstoneShape({ ...base, data: { message: { content: [{ type: 'text', text: 'x' }], source: { kind: 'plugin', plugin: 'dsh-undo' } } } })).toBe(false)
+    expect(isUndoTombstoneShape({ ...base, data: { message: { content: [{ type: 'text', text: 'x' }], source: { kind: 'plugin:dsh-undo' } } } })).toBe(false)
     expect(isUndoTombstoneShape({ ...base, data: { message: { content: [], source: { kind: 'plugin', plugin: 'compact' } } } })).toBe(false)
     expect(isUndoTombstoneShape({ ...base, data: { message: { content: [], source: { kind: 'user' } } } })).toBe(false)
   })
@@ -193,7 +193,7 @@ describe('deriveUndoState', () => {
     // but no tail (the tail would be a dead anchor with no turn identity).
     const noTurn = [...twoTurnLog(), entry({
       seq: 11, type: 'system/message', surfaceOp: { op: 'replace' }, sourceEventSeqs: [6, 7, 8, 9],
-      data: { message: { id: 't-n', role: 'system', content: [], source: { kind: 'plugin', plugin: 'dsh-undo' } } },
+      data: { message: { id: 't-n', role: 'system', content: [], source: { kind: 'plugin:dsh-undo' } } },
     })]
     const state = deriveUndoState(noTurn)
     expect(state.hiddenKeys.has(nodeKey('assistant-step', '2:0'))).toBe(true)
