@@ -44,6 +44,14 @@ const NS = 'undo'
 /** The undo action's position after the feedback pair in the actions strip. */
 const ACTION_ORDER = 20
 
+/** Becomes the `useUndo` selector hook for the slot inject face below. */
+
+/** The retain result this plugin only needs to hold and later release. */
+interface RetainedSession {
+  release(): void
+  readonly ready: Promise<unknown>
+}
+
 /** The client service slices this plugin reads (structural). */
 interface UndoCtx {
   slots: ClientContext['slots']
@@ -55,6 +63,7 @@ interface UndoCtx {
       readonly ctx: { get(name: string): unknown }
       readonly eventSource: UndoSurfaceDeps['eventSource']
     } | undefined
+    retain(sessionId: string, options: { source: string }): RetainedSession
   }
 }
 
@@ -72,6 +81,8 @@ export function apply(ctx: ClientContext): void {
 
   const scoped = ctx as unknown as UndoCtx
   const surfaces = new Map<string, UndoSurface>()
+  /** Sessions this plugin itself retained because no binding existed yet. */
+  const retained = new Map<string, RetainedSession>()
   const hiddenKeySets = new Map<string, ReadonlySet<string>>()
   let currentKeys: ReadonlySet<string> = new Set()
   const hider = new RowHider(
@@ -96,34 +107,73 @@ export function apply(ctx: ClientContext): void {
     hider.apply()
   }
 
+  /**
+   * Acquire a retained generation for a session whose binding was missing, then
+   * rebuild its surface and republish so the actions strip picks up the live
+   * window. Idempotent per session: a second call while the first open is in
+   * flight returns immediately.
+   * @param sessionId - the session whose panel asked for undo state.
+   */
+  const retainSession = (sessionId: string): void => {
+    if (retained.has(sessionId)) return
+    let reference: RetainedSession
+    try {
+      reference = scoped.sessions.retain(sessionId, { source: 'undoSurface' })
+    } catch {
+      // An unknown or closed session cannot be retained; the detached surface
+      // already returned above renders nothing, which is the honest outcome.
+      return
+    }
+    retained.set(sessionId, reference)
+    void reference.ready.then(() => {
+      if (retained.get(sessionId) !== reference) return
+      // Drop the cached detached surface (if the slot stored an earlier one) and
+      // re-derive from the now-live window.
+      surfaces.get(sessionId)?.dispose()
+      surfaces.delete(sessionId)
+      const surface = surfaceFor(sessionId)
+      surface.publish()
+    }, () => {
+      retained.delete(sessionId)
+    })
+  }
+
   const surfaceFor = (sessionId: string): UndoSurface => {
     const cached = surfaces.get(sessionId)
     if (cached !== undefined) return cached
     const binding = scoped.sessions.binding(sessionId)
-    const deps: UndoSurfaceDeps = binding === undefined
-      ? {
-          // One-off bound-only sessions (projection edges) have no live window;
-          // serve them a detached surface so the slot still renders.
-          sessionId,
-          eventSource: { subscribe: () => () => {}, getSnapshot: () => ({ entries: [] }) },
-          callRpc: () => Promise.resolve(false),
-          setDraft: () => {},
-        }
-      : {
-          sessionId,
-          eventSource: binding.eventSource,
-          callRpc: async (endpoint, payload) => (await scoped.connection.rpc.call(CHANNEL, endpoint, payload)).ok,
-          setDraft: (text) => {
-            const conversation = binding.ctx.get('conversation') as {
-              input?: { for(actx: unknown): { setDraft(text: string): void } | undefined }
-            } | undefined
-            conversation?.input?.for(binding.ctx)?.setDraft(text)
-          },
-          onState: state => {
-            hiddenKeySets.set(sessionId, mergedHidden(state))
-            reapplyHidden()
-          },
-        }
+    // A session with no retained generation yet (the panel injected before any
+    // consumer called `sessions.retain`) has no event window. `sessions.binding`
+    // only borrows: it does not create one. Cache neither the detached surface
+    // nor the undefined result — `retainSession` acquires the generation and
+    // rebuilds this session's surface once its history opens, so the buttons
+    // appear on every visited session instead of only on the ones another
+    // consumer happened to retain first (verified live, 2026-10-28: the
+    // referenced session showed no undo action until a reload).
+    if (binding === undefined) {
+      retainSession(sessionId)
+      return new UndoSurface({
+        sessionId,
+        eventSource: { subscribe: () => () => {}, getSnapshot: () => ({ entries: [] }) },
+        callRpc: () => Promise.resolve(false),
+        setDraft: () => {},
+      })
+    }
+    const deps: UndoSurfaceDeps = {
+      sessionId,
+      eventSource: binding.eventSource,
+      callRpc: async (endpoint, payload) => (await scoped.connection.rpc.call(CHANNEL, endpoint, payload)).ok,
+      setDraft: (text) => {
+        const conversation = binding.ctx.get('conversation') as {
+          input?: { for(actx: unknown): { setDraft(text: string): void } | undefined }
+        } | undefined
+        conversation?.input?.for(binding.ctx)?.setDraft(text)
+      },
+      onState: state => {
+        hiddenKeySets.set(sessionId, mergedHidden(state))
+        reapplyHidden()
+      },
+    }
     const surface = new UndoSurface(deps)
     // Cold-load initial apply: on a small session the event window is fully
     // populated before the slot injects the surface, so no window change
@@ -140,6 +190,8 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => () => {
     for (const surface of surfaces.values()) surface.dispose()
     surfaces.clear()
+    for (const reference of retained.values()) reference.release()
+    retained.clear()
     hiddenKeySets.clear()
     hider.dispose()
   }, 'dsh-undo: per-session surfaces and row hider')

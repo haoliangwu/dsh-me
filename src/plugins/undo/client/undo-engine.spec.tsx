@@ -284,6 +284,58 @@ describe('client apply() cold-load wiring', () => {
       document.body.removeChild(container)
     })
   })
+
+  it('retains a session whose binding is missing instead of caching a dead surface', async () => {
+    // Regression (verified live, 2026-10-28): the panel injects before any other
+    // consumer called `sessions.retain`, so `binding()` is undefined. The old
+    // code cached a detached empty surface FOREVER, and that session never
+    // showed the undo action while a sibling session did.
+    const window = fakeWindow(twoTurnLog())
+    const registrations: Array<{ inject(sessionId: string): { hooks: { undo: UndoSurface } } }> = []
+    let bound = false
+    let resolveReady: () => void = () => {}
+    const ready = new Promise<void>(resolve => { resolveReady = resolve })
+    const retained: string[] = []
+    const ctx = {
+      effect: (fn: () => unknown) => { fn() },
+      locale: { register: () => {} },
+      connection: { rpc: { call: async () => ({ ok: true }) } },
+      slots: {
+        inject: (_slot: string, factory: () => unknown) => { factory() },
+        register: (config: { inject(sessionId: string): { hooks: { undo: UndoSurface } } }) => {
+          registrations.push(config)
+          return config
+        },
+      },
+      sessions: {
+        binding: () => (bound
+          ? { sessionId: 's1', ctx: { get: () => undefined }, eventSource: window.source }
+          : undefined),
+        retain: (sessionId: string) => {
+          retained.push(sessionId)
+          return {
+            ready,
+            release: () => {},
+          }
+        },
+      },
+    }
+    applyClient(ctx as unknown as Parameters<typeof applyClient>[0])
+    const wiring = registrations[0]?.inject('s1')
+    if (wiring === undefined) throw new Error('no undo slot registration')
+    // Before the generation opens there is nothing to undo — no phantom button.
+    expect(wiring.hooks.undo.getSnapshot().lastTurn).toBeUndefined()
+    expect(retained).toEqual(['s1'])
+    // The retained generation opens: the surface must now read the live window.
+    bound = true
+    resolveReady()
+    await ready
+    await Promise.resolve()
+    const state = registrations[0]?.inject('s1').hooks.undo.getSnapshot()
+    expect(state?.lastTurn).toBe(2)
+    expect(state?.idle).toBe(true)
+    expect(state?.messageTurn.get('a2')).toBe(2)
+  })
 })
 
 describe('RowHider', () => {
