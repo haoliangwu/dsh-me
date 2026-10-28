@@ -9,17 +9,16 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
+import { resolve } from 'node:path'
 import {
   assertPositiveFinite,
   NO_START_CAPABILITIES,
-  resolveChildCwd,
   type ResolvedSubagentStartRequest,
   type SubagentCapabilities,
   type SubagentProvider,
 } from '@deepseek-ai/dsh-subagent'
 import {
   DEFAULT_DISPOSE_GRACE_MS,
-  ocStartupFailure,
   resolveOcBinary,
   startOcRun,
   type OcRunSpec,
@@ -99,21 +98,10 @@ class OcProvider implements SubagentProvider {
         'subagent-oc: no working directory for the child — delegate from a parent session that has one',
       )
     }
-    let cwd: string
-    try {
-      cwd = resolveChildCwd(
-        'subagent-oc',
-        undefined,
-        parentCwd,
-      )
-    } catch (error: unknown) {
-      if (request.signal.aborted) {
-        throw new Error(
-          'subagent-oc: request was aborted before OpenCode startup',
-        )
-      }
-      throw ocStartupFailure(error)
-    }
+    // Upstream removed `resolveChildCwd` (0.2.1-rc.4): the manager now resolves
+    // a missing request.cwd itself (workingDirectory.ensure), so the provider's
+    // job is to hand over the parent's absolute cwd.
+    const cwd: string = resolve(parentCwd)
     const spec: OcRunSpec = {
       cwd,
       binPath: this.config.binPath,

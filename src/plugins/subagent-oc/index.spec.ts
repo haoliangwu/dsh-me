@@ -160,12 +160,14 @@ describe('apply', () => {
       inheritsParentContext: boolean
     }
     expect(provider.name).toBe('oc')
+    // Shape follows upstream's NO_START_CAPABILITIES (rc.4 added agentPreset,
+    // replaced persona/toolFilter with it; keep mirroring the constant's keys
+    // so an upstream shape change stays visible here).
     expect(provider.capabilities).toEqual({
       agentOptions: false,
+      agentPreset: false,
       outputSchema: false,
       depthLimit: false,
-      toolFilter: false,
-      persona: false,
     })
     expect(provider.inheritsParentContext).toBe(false)
   })
